@@ -1,6 +1,6 @@
 UNIT_TESTS = test_omnibox test_store test_shield test_security test_theme
 
-.PHONY: test test-unit run package install lint clean
+.PHONY: test test-unit run package install install-user uninstall-user lint clean
 
 test:
 	python3 -m unittest discover -s tests -v
@@ -16,6 +16,12 @@ package:
 
 install:
 	cd packaging/arch && makepkg -fsi
+
+install-user:
+	packaging/user/install.sh install
+
+uninstall-user:
+	packaging/user/install.sh uninstall
 
 lint:
 	find . -name '*.py' -not -path './.venv/*' -not -path './packaging/arch/pkg/*' -not -path './packaging/arch/src/*' -print0 | xargs -0 python3 -m py_compile
