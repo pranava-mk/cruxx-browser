@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import security, sleep, spaces
+from . import security, sleep, spaces, wall
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +32,13 @@ DEFAULT_SETTINGS = {
     "split_enabled": False,
     "restore_session": True,
     "zoom_by_host": {},
+    "wall": dict(wall.DEFAULT_WALL),
+    "peek_modifier": "alt",
 }
 # Search engines that the omnibox knows. A test keeps this in step.
 ENGINES = ("duckduckgo", "google", "brave", "startpage", "kagi")
 SLEEP_CHOICES = (0, 15, 30, 60, 120)
+PEEK_MODIFIERS = ("alt", "shift", "off")
 BOOL_OPTIONS = ("shield_enabled", "restore_session", "sleep_pinned",
                 "keep_awake_enabled", "split_enabled")
 ZOOM_MIN = 0.3
@@ -56,6 +59,12 @@ def check_option(key, value):
     if key == "engine":
         if value in ENGINES:
             return value
+    elif key == "peek_modifier":
+        if value in PEEK_MODIFIERS:
+            return value
+    elif key == "wall":
+        if isinstance(value, dict):
+            return wall.clean_wall(value)
     elif key in BOOL_OPTIONS:
         if isinstance(value, bool):
             return value
@@ -235,6 +244,9 @@ class Store:
                     "restore_session"):
             if isinstance(raw.get(key), bool):
                 out[key] = raw[key]
+        out["wall"] = wall.clean_wall(raw.get("wall"))
+        if raw.get("peek_modifier") in PEEK_MODIFIERS:
+            out["peek_modifier"] = raw["peek_modifier"]
         out["sleep_after_min"] = sleep.clean_minutes(raw.get("sleep_after_min", 30))
         awake = raw.get("keep_awake_hosts")
         if isinstance(awake, list):

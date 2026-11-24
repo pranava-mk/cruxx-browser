@@ -157,6 +157,10 @@ paned.cruxx-split > separator {{ background-color: {hairline}; min-width: 5px; m
 .cruxx-scrim {{ background-color: alpha({background}, 0.74); }}
 .cruxx-card {{ background-color: {background}; border: 1px solid {hairline};
   border-radius: 14px; box-shadow: 0 8px 24px alpha(black, 0.10); }}
+.cruxx-peek {{ box-shadow: 0 18px 60px alpha(black, 0.45); }}
+.cruxx-peek-head {{ padding: 4px 8px 4px 14px; border-bottom: 1px solid {hairline}; }}
+.cruxx-pin.floating {{ box-shadow: inset 0 0 0 1px {accent}; }}
+.cruxx-float-mark {{ font-size: 10px; color: {accent}; }}
 .cruxx-card.refused {{ border-color: alpha({red}, 0.35); }}
 .cruxx-field {{ padding: 14px 22px; }}
 .cruxx-hint {{ font-size: 15.5px; color: alpha({foreground}, 0.3); }}

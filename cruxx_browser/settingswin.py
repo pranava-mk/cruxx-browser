@@ -10,10 +10,13 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gtk  # noqa: E402
 
-from . import __version__, omnibox, shortcuts, store  # noqa: E402
+from . import __version__, omnibox, shortcuts, store, wall  # noqa: E402
 from .forms import button, choice, confirm, divider, label, row, switch  # noqa: E402
 
-SECTIONS = ("General", "Tabs", "Privacy", "Shortcuts", "About")
+SECTIONS = ("General", "Tabs", "Themes", "Privacy", "Shortcuts", "About")
+PEEK_TEXT = {"alt": "Alt+click", "shift": "Shift+click", "off": "Off"}
+WALL_TEXT = (("off", "Off"), ("omarchy", "Omarchy wallpaper"), ("color", "Colour"),
+             ("gradient", "Gradient"), ("picture", "Picture"))
 SLEEP_TEXT = {0: "Never", 15: "15 minutes", 30: "30 minutes", 60: "1 hour",
               120: "2 hours"}
 
@@ -124,6 +127,64 @@ class SettingsWindow(Gtk.Window):
                    "Shows Keep This Site Awake in the menu and the site card.")
         self._bool(page, "split_enabled", "Split View",
                    "Show two pages side by side.")
+        self._add(page, row("Peek", choice(
+            [(k, PEEK_TEXT[k]) for k in store.PEEK_MODIFIERS], self._opt("peek_modifier"),
+            lambda v: self.win.set_option("peek_modifier", v)),
+            "Hold this key and click a link to preview it in a card."))
+
+    def _wall_set(self, **changes):
+        spec = dict(self._opt("wall"))
+        spec.update(changes)
+        self.win.set_option("wall", spec)
+        self._wall_sensitive()
+
+    def _wall_sensitive(self):
+        kind = self._opt("wall")["kind"]
+        for name, widget in self._wall_rows.items():
+            widget.set_sensitive(kind == name)
+
+    def _color_button(self, key):
+        widget = Gtk.ColorButton()
+        color = Gdk.RGBA()
+        color.parse(self._opt("wall")[key])
+        widget.set_rgba(color)
+        widget.connect("color-set", lambda w: self._wall_set(**{key: _hex(w.get_rgba())}))
+        return widget
+
+    def _page_themes(self, page):
+        spec = self._opt("wall")
+        self._wall_rows = {}
+        self._add(page, row("Wall behind a blank tab", choice(
+            list(WALL_TEXT), spec["kind"], lambda v: self._wall_set(kind=v)),
+            "Draws once and is kept. It costs nothing while you browse."))
+        rows = {}
+        rows["color"] = row("Colour", self._color_button("color"))
+        gradient = Gtk.Box(spacing=8)
+        gradient.pack_start(self._color_button("from"), False, False, 0)
+        gradient.pack_start(self._color_button("to"), False, False, 0)
+        angle = Gtk.SpinButton.new_with_range(0, 359, wall.ANGLE_STEP)
+        angle.set_value(spec["angle"])
+        angle.set_tooltip_text("Angle in degrees. 0 goes up, 90 goes right.")
+        angle.connect("value-changed", lambda w: self._wall_set(angle=int(w.get_value())))
+        gradient.pack_start(angle, False, False, 0)
+        rows["gradient"] = row("Gradient: two colours and an angle", gradient)
+        chooser = Gtk.FileChooserButton(
+            title="Choose a picture", action=Gtk.FileChooserAction.OPEN)
+        images = Gtk.FileFilter()
+        images.set_name("Pictures")
+        images.add_pixbuf_formats()
+        chooser.add_filter(images)
+        if spec["picture"]:
+            chooser.set_filename(spec["picture"])
+        chooser.connect("file-set", lambda w: self._wall_set(
+            picture=w.get_filename() or ""))
+        chooser.set_size_request(220, -1)
+        rows["picture"] = row("Picture", chooser,
+                              "A picture file up to 50 MB. A bad file turns the wall off.")
+        for name in ("color", "gradient", "picture"):
+            self._add(page, rows[name])
+            self._wall_rows[name] = rows[name]
+        self._wall_sensitive()
 
     def _page_privacy(self, page):
         self._bool(page, "shield_enabled", "Ad and tracker shield",
@@ -228,3 +289,8 @@ class SettingsWindow(Gtk.Window):
         if self.win.active is not None:
             self.win.reapply_hidden(self.win.active)
         self._say("Hidden-element rules cleared.")
+
+
+def _hex(color):
+    """Return a Gdk.RGBA as a #rrggbb text."""
+    return "#%02x%02x%02x" % tuple(int(round(v * 255)) for v in (color.red, color.green, color.blue))

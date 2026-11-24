@@ -19,7 +19,8 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Status line: the address of a link under the pointer shows at the bottom-left of the page. Restored tabs load only when you select them.
 - Settings window (Ctrl+comma, or "Settings…" in the menu). A list of sections is on the left. The content is on the right. A change applies at once and the app saves it with an atomic write. The sections are:
   - General: search engine, restore last session (`restore_session`, on by default), and tabs side (left or top).
-  - Tabs: sleep time (never, 15, 30, 60 or 120 minutes), sleep for pinned tabs, the keep-awake offer, and Split View.
+  - Tabs: sleep time (never, 15, 30, 60 or 120 minutes), sleep for pinned tabs, the keep-awake offer, Split View, and the Peek key (Alt+click, Shift+click or off).
+  - Themes: the wall behind a blank tab (see below).
   - Privacy: the global ad and tracker shield (`shield_enabled`, on by default), the sites where the shield is paused, the remembered permissions (each has a Remove button), and buttons to clear history, cookies and site data (the app asks first), and hidden-element rules. When the shield is off, no page uses the filter.
   - Shortcuts: a read-only table. The app builds it from the real shortcut table in `shortcuts.py`.
   - About: version, credit, data folders, and the no-telemetry statement.
@@ -41,6 +42,9 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Clean links. When you type or paste an address, or open a link in a new tab, the app removes tracking parameters (utm_*, fbclid, gclid, msclkid, and others). Other parameters and the part after # stay. Links that the page itself opens are not changed.
 - Rename a tab. Double-click the tab title, or right-click and choose "Rename tab". Enter saves, Esc cancels, an empty name resets the title. The name is saved in the session. A private tab does not save it.
 - Drag tabs to change their order, in the tab column and in the top strip. Drop a tab on the pinned tiles to pin it. Drag a pinned tile into the list to unpin it. The order is saved in the session.
+- Wall. A blank tab can show a picture behind the address field. It is off by default. Choose it in Settings, section Themes (`wall` in `settings.json`). The choices are: Off, the Omarchy wallpaper (the file that `$XDG_STATE_HOME/omarchy/current/background` points to; it follows a theme change), one colour, a gradient (two colours and an angle), or a picture file that you choose. The wall is a GTK widget behind the blank tab. It is not part of any web page. The browser scales a picture to cover the area once for each window size and keeps the result. Nothing is drawn again while you browse. The browser accepts only a regular file of at most 50 MB. If a file cannot load, the wall turns off and a log line says why.
+- Peek. Hold Alt and click a link. The page does not leave. The link opens in a card over the page (about 80% of the area, with a dim background). The card has its own WebView. It uses the same rules as the tab you came from: a private tab gives a private card, and the shield, hidden-element rules, security settings and navigation rules all apply. The card has the host name, "Open as tab" and a close button. "Open as tab" moves the page into a new tab and does not load it again. Esc, the close button, or a click on the dim area closes the card and destroys its WebView. The browser records the page in history only if the tab is not private. Change the key in Settings, section Tabs (`peek_modifier`: `alt`, `shift` or `off`). A card denies permission requests.
+- Video float. Press Ctrl+Shift+P. The browser looks for the largest playing video (or else the largest visible video) in the page. If there is none, a short note says "No video on this page". Otherwise the WebView of the tab moves, without a reload, into a small window of 480x270 with the title "cruxx float" and a random token. A style makes the video fill that window. On Hyprland, the browser uses `hyprctl` (argument lists, no shell) to make the window float, set its size, move it to the bottom right of the focused monitor, and pin it so that it stays on top. The browser does this only when `HYPRLAND_INSTANCE_SIGNATURE` is set and `hyprctl` is in the path. Press Ctrl+Shift+P again in either window, or close the small window, to put the page back in its tab and remove the style. The tab row shows "floating" while the video is out. A floating tab never sleeps. A tab in a split pair cannot float. The style cannot fill the window if the page puts the video in an element with a CSS transform.
 - Split View. It is off by default. Turn it on with "Split View" in Settings (`split_enabled` in `settings.json`). Press Ctrl+Alt+N, or use "Split current page" in the settings menu. The browser pairs the current tab with the next tab. If there is no other tab, it opens a new blank tab and shows the address field. You can also drag a tab from the list onto the page. Drag the divider to change the width of the panes. The pane with the outline gets all page commands (address field, find, reading mode, hide element, zoom, reload, back, forward). Click a pane, or press Ctrl+Alt+Left or Ctrl+Alt+Right, to move the focus. Ctrl+W closes the focused tab. The other pane then takes the whole area. A pair shows as two rows with a bar on the left side. Click one row to select the pair with that pane in focus. "Separate split tabs" (settings menu, tab menu) makes the two tabs normal again. A pinned tab cannot be in a pair. Pairs and the divider position are saved in the session. A pair that has a private tab is not saved. Tab sleep never puts a visible pane to sleep. If you turn Split View off, all pairs end.
 - Spaces. A space is a separate set of tabs and pins. It has a name, an icon (a letter or an emoji), its own split pairs, and its own selected tab. The first space is "Home". Small round marks at the bottom of the tab list show the spaces. Click a mark to switch. Right-click a mark to rename or delete the space, or to add a new space. "New space" is also in the settings menu. The browser asks before it deletes a space that has tabs. A switch does not close the pages of the other spaces. They can sleep as usual. A private tab belongs to the current space. The browser does not save it. The session keeps all spaces. Old session files load into the space "Home". You can have up to 9 spaces.
 - Find in page, zoom, fullscreen, and a tab switcher (Ctrl+K, a floating list with fuzzy match on title and address).
@@ -57,6 +61,8 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+R, F5 | Reload |
 | Ctrl+Alt+R | Reload from the origin (ignore the cache) |
 | Ctrl+Shift+R | Reading mode |
+| Ctrl+Shift+P | Float the video of this page, or bring it back |
+| Alt+click on a link | Peek: show the link in a card |
 | Ctrl+[, Alt+Left | Back |
 | Ctrl+], Alt+Right | Forward |
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab |
@@ -102,7 +108,8 @@ make install
 Pacman installs the dependencies:
 
 ```
-sudo pacman -S python python-gobject gtk3 webkit2gtk-4.1 bubblewrap xdg-dbus-proxy hicolor-icon-theme
+sudo pacman -S python python-gobject gtk3 webkit2gtk-4.1 bubblewrap xdg-dbus-proxy hicolor-icon-theme \
+  gst-plugins-good gst-plugins-bad gst-libav
 ```
 
 To build the package without installing it, run `make package`.
@@ -169,6 +176,8 @@ Use it in Hyprland window rules.
 See `SECURITY.md` for more.
 
 ## Testing
+
+Hidden test options (for the developer): `--test-url URL --test-action wall|peek|peek-adopt|float|float-back|settings --test-hold SECONDS` loads URL, does the action, keeps the window open, and then exits with code 0.
 
 Run all tests:
 

@@ -19,7 +19,12 @@ depends=(
   bubblewrap
   xdg-dbus-proxy
   hicolor-icon-theme
+  # WebKit needs these for audio output and video decoding.
+  gst-plugins-good
+  gst-plugins-bad
+  gst-libav
 )
+optdepends=('geoclue: location for sites you allow')
 makedepends=()
 source=()
 sha256sums=()

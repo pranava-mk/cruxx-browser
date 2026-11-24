@@ -16,7 +16,7 @@ SHIFT = {
     "t": "reopen_closed", "s": "toggle_side", "d": "toggle_pin", "c": "copy_url",
     "v": "paste_and_go", "b": "bookmark", "j": "_toggle_downloads",
     "n": "_open_private", "h": "start_hide", "u": "open_hidden_list",
-    "r": "toggle_reader",
+    "r": "toggle_reader", "p": "toggle_float",
 }
 # Keys that the window handles with its own rules (not in the two tables).
 SPECIAL = (
@@ -33,7 +33,8 @@ SPECIAL = (
     ("Ctrl+plus, Ctrl+minus, Ctrl+0", "Zoom in, zoom out, reset zoom"),
     ("F5", "Reload"),
     ("F11", "Fullscreen"),
-    ("Esc", "Close address field, switcher, panel, find bar, or picker"),
+    ("Alt+click on a link", "Peek: show the link in a card (see Tabs in Settings)"),
+    ("Esc", "Close peek card, address field, switcher, panel, find bar, or picker"),
 )
 LABELS = {
     "open_tab": "New tab", "_close_active": "Close tab",
@@ -47,7 +48,7 @@ LABELS = {
     "paste_and_go": "Paste and go", "bookmark": "Bookmark page",
     "_toggle_downloads": "Downloads panel", "_open_private": "Private tab",
     "start_hide": "Hide element", "open_hidden_list": "Hidden elements on this site",
-    "toggle_reader": "Reading mode",
+    "toggle_reader": "Reading mode", "toggle_float": "Float the video of this page",
 }
 KEY_NAMES = {"bracketleft": "[", "bracketright": "]", "comma": ","}
 

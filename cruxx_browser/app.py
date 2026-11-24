@@ -32,6 +32,7 @@ class CruxxApp(Gtk.Application):
         self.shield = None
         self.opts = None
         self.exit_code = 0
+        self._acted = False
         GLib.set_application_name("cruxx browser")
         # GTK3 sets the Wayland app_id from the program name.
         GLib.set_prgname(WM_CLASS)
@@ -120,8 +121,36 @@ class CruxxApp(Gtk.Application):
         self.window.finished_cb(tab)
 
     def _test_finished(self, _tab):
+        if self.opts.test_action:
+            if not self._acted:
+                self._acted = True
+                # Wait a moment so that the page and its video can start.
+                GLib.timeout_add(1500, self._run_action, self.opts.test_action)
+            return
         if self.opts.test_exit_after_load:
             self._exit(0)
+
+    def _run_action(self, action):
+        """Hidden test: do one feature action, hold the window, then exit 0."""
+        win = self.window
+        hold = max(1, min(self.opts.test_hold, 20))
+        if action == "wall":
+            if win.store.settings["wall"]["kind"] == "off":
+                win.set_option("wall", dict(win.store.settings["wall"], kind="omarchy"))
+            win.open_tab()
+            win.hide_prompts()
+        elif action in ("peek", "peek-adopt"):
+            win.open_peek(win.active, win.active.url)
+            if action == "peek-adopt":
+                GLib.timeout_add_seconds(3, lambda: win.adopt_peek() or False)
+        elif action == "settings":
+            win.open_settings("Themes")
+        else:
+            win.toggle_float()
+            if action == "float-back":
+                GLib.timeout_add_seconds(3, lambda: win.toggle_float() or False)
+        GLib.timeout_add_seconds(hold, self._exit, 0)
+        return False
 
     def _open_in_running(self, opts):
         for url in self._urls(opts):

@@ -37,8 +37,13 @@ def rgba(hex_color):
 
 
 class Tab:
-    def __init__(self, win, url="", title="", pinned=False, private=False):
+    def __init__(self, win, url="", title="", pinned=False, private=False, peek=False):
         self.win = win
+        # A peek tab lives in the floating card. It is not in a tab list until
+        # the user opens it as a tab.
+        self.peek = peek
+        # True while the WebView is in the float window (see Window.toggle_float).
+        self.floating = False
         self.stored_url = url
         self.stored_title = title
         self.pinned = pinned
@@ -109,7 +114,10 @@ class Tab:
                 ("enter-fullscreen", self._on_enter_fullscreen),
                 ("leave-fullscreen", self._on_leave_fullscreen)):
             view.connect(name, handler)
-        win.add_view(self)
+        if self.peek:
+            win.add_peek_view(self)
+        else:
+            win.add_view(self)
         url = self.stored_url
         if url:
             self.load(url)
@@ -193,6 +201,14 @@ class Tab:
         # navigation as main frame when it opens a window or the user starts it.
         main = kind == types.NEW_WINDOW_ACTION or action.is_user_gesture()
         verdict = security.scheme_decision(uri, main)
+        if (verdict == "allow" and kind == types.NAVIGATION_ACTION and not self.peek
+                and action.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED
+                and not action.get_frame_name() and security.loadable(uri)
+                and self._peek_held(action.get_modifiers())):
+            # The user held the peek key and clicked a link: show it in a card.
+            decision.ignore()
+            GLib.idle_add(self.win.open_peek, self, uri)
+            return True
         if verdict == "allow":
             nav = action.get_navigation_type()
             # Limit: WebKit does not say if a navigation is for the main frame.
@@ -209,6 +225,12 @@ class Tab:
             if verdict == "external" and action.is_user_gesture():
                 GLib.idle_add(self.win.confirm_external, uri, self.host)
         return True
+
+    def _peek_held(self, state):
+        """Return True if STATE has the modifier key of the peek setting."""
+        wanted = {"alt": Gdk.ModifierType.MOD1_MASK, "shift": Gdk.ModifierType.SHIFT_MASK}
+        mask = wanted.get(self.win.store.settings["peek_modifier"])
+        return mask is not None and bool(state & mask)
 
     def _on_create(self, view, action):
         if not action.is_user_gesture():
@@ -237,6 +259,10 @@ class Tab:
         return False
 
     def _on_permission(self, view, request):
+        if self.peek:
+            # A card has no permission bar. Deny the request.
+            request.deny()
+            return True
         return self.win.ask_permission(self, request)
 
     def _on_tls_error(self, view, failing_uri, certificate, errors):
@@ -244,6 +270,8 @@ class Tab:
         return True
 
     def _on_enter_fullscreen(self, _view):
+        if self.peek:
+            return True
         self.win.set_page_fullscreen(True)
         return False
 

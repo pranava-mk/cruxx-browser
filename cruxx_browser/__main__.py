@@ -21,6 +21,9 @@ def build_parser():
                         dest="private", action="store_true", help="open a private tab")
     parser.add_argument("--test-url", help=argparse.SUPPRESS)
     parser.add_argument("--test-sleep", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--test-action", choices=("wall", "peek", "peek-adopt", "float",
+                                                  "float-back", "settings"), help=argparse.SUPPRESS)
+    parser.add_argument("--test-hold", type=int, default=6, help=argparse.SUPPRESS)
     parser.add_argument("--test-exit-after-load", action="store_true",
                         help=argparse.SUPPRESS)
     return parser

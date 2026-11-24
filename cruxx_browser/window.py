@@ -11,18 +11,22 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
-from . import (cleanlink, memory, omnibox, reorder, security, shortcuts, sleep,  # noqa: E402
-               spaces, store, theme)
+from . import (cleanlink, floatvideo, memory, omnibox, reorder, security,  # noqa: E402
+               shortcuts, sleep, spaces, store, theme)
 from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
                          SwitcherPrompt)
 from .sidebar import TabStrip, drop_targets  # noqa: E402
 from .tab import Tab, js_call, read_resource, rgba  # noqa: E402
+from .wallview import WallView  # noqa: E402
 from .widgets import Glyph  # noqa: E402
 
 log = logging.getLogger(__name__)
 CLOSED_CAP = 25
 STATUS_HIDE_MS = 120
 ZOOM_STEP = 0.1
+TOAST_MS = 2200
+HYPR_DELAY_MS = 300
+PEEK_SHARE = 0.8
 
 PERMISSION_KINDS = (
     (WebKit2.GeolocationPermissionRequest, "geolocation"),
@@ -266,6 +270,9 @@ class Window(Gtk.ApplicationWindow):
         self._settings_win = None
         self.sleep_override_min = None
         self._external_open = False
+        self.peek = None
+        self.floats = {}
+        self._toast_src = 0
         self.colors = theme.load()
         self._apply_theme()
         self._theme_watcher = theme.Watcher(self._on_theme_changed)
@@ -317,10 +324,24 @@ class Window(Gtk.ApplicationWindow):
 
         self.bars = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.stack = Gtk.Stack()
+        # A floated tab leaves an empty page. This note shows in its place.
+        self.float_hint = Gtk.Label(
+            label="The video is floating. Press Ctrl+Shift+P to bring it back.")
+        self.float_hint.get_style_context().add_class("muted")
+        self.float_hint.show()
+        self.stack.add_named(self.float_hint, "floating")
         self.panel = Panel(self)
         # Floating things lie over the page, in this order from the bottom.
         self.overlay = Gtk.Overlay()
         self.overlay.add(self.stack)
+        # The wall lies over a blank tab. A click goes through to the page.
+        self.wall = WallView()
+        self.toast_label = Gtk.Label()
+        self.toast_label.get_style_context().add_class("cruxx-status")
+        self.toast_label.set_halign(Gtk.Align.CENTER)
+        self.toast_label.set_valign(Gtk.Align.END)
+        self.toast_label.set_margin_bottom(48)
+        self._build_peek()
         self.scrim = Gtk.EventBox()
         self.scrim.set_visible_window(True)
         self.scrim.get_style_context().add_class("cruxx-scrim")
@@ -340,12 +361,15 @@ class Window(Gtk.ApplicationWindow):
         self.status.set_margin_end(10)
         self.status.set_margin_bottom(10)
         self.find_bar = self._build_find_bar()
-        for widget in (self.scrim, self.dropzone, self.status, self.find_bar,
+        for widget in (self.wall, self.scrim, self.dropzone, self.status, self.find_bar,
+                       self.peek_layer, self.toast_label,
                        self.prompt.card, self.switcher.card):
             widget.set_no_show_all(True)
             widget.hide()
             self.overlay.add_overlay(widget)
-        self.overlay.set_overlay_pass_through(self.status, True)
+        for widget in (self.wall, self.status, self.toast_label):
+            self.overlay.set_overlay_pass_through(widget, True)
+        self.overlay.connect("size-allocate", self._size_peek)
         self.overlay.connect("get-child-position", self._place_child)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         right.pack_start(self.strip.top, False, False, 0)
@@ -358,6 +382,7 @@ class Window(Gtk.ApplicationWindow):
         self.add(root)
         root.show_all()
         self._layout()
+        self.apply_wall()
 
     def _place_child(self, overlay, widget, rect):
         """Put a prompt card in the middle of the page, a little high."""
@@ -481,6 +506,8 @@ class Window(Gtk.ApplicationWindow):
                 self.schedule_save()
         elif key == "keep_awake_enabled":
             self.refresh()
+        elif key == "wall":
+            self.apply_wall()
         return True
 
     def set_side(self, side):
@@ -661,6 +688,8 @@ class Window(Gtk.ApplicationWindow):
         for tab in self.all_tabs():
             if tab.view is not None:
                 tab.view.set_background_color(rgba(self.colors["background"]))
+        # The Omarchy wallpaper can change with the theme.
+        self.apply_wall()
 
     # contexts and views
     def context(self, private):
@@ -674,6 +703,8 @@ class Window(Gtk.ApplicationWindow):
     def _place(self, tab):
         """Put the view of TAB where it belongs: a pane of its pair, or the stack."""
         view = tab.view
+        if tab.floating:
+            return
         split = self.split_of(tab)
         if split is not None and split.panes is not None:
             holder = split.panes[0 if tab is split.a else 1]
@@ -690,6 +721,7 @@ class Window(Gtk.ApplicationWindow):
             holder.pack_start(view, True, True, 0)
 
     def _destroy_view(self, tab):
+        self._release_float(tab)
         view = tab.view
         if view is not None:
             parent = view.get_parent()
@@ -701,6 +733,9 @@ class Window(Gtk.ApplicationWindow):
     def _show(self, tab):
         """Show TAB. If it is in a pair, show the pair. TAB is the focused pane."""
         tab.ensure_view()
+        if tab.floating:
+            self.stack.set_visible_child(self.float_hint)
+            return
         split = self.split_of(tab)
         if split is None:
             self._place(tab)
@@ -797,7 +832,8 @@ class Window(Gtk.ApplicationWindow):
     def split_current(self):
         """Pair the current tab with the next free tab, or with a new blank tab."""
         tab = self.active
-        if not self.split_on() or tab is None or tab.pinned or self.split_of(tab):
+        if (not self.split_on() or tab is None or tab.pinned or self.split_of(tab)
+                or tab.floating):
             return
         partner = spaces.choose_partner(self.tabs, tab, self.space.splits)
         fresh = partner is None
@@ -812,7 +848,7 @@ class Window(Gtk.ApplicationWindow):
         tab = self.active
         if (not self.split_on() or tab is None or other is None or other is tab
                 or other not in self.tabs or tab.pinned or other.pinned
-                or self.split_of(tab)):
+                or self.split_of(tab) or tab.floating or other.floating):
             return
         old = self.split_of(other)
         if old is not None:
@@ -971,6 +1007,292 @@ class Window(Gtk.ApplicationWindow):
         menu.connect("selection-done", lambda m: GLib.idle_add(m.destroy))
         menu.popup_at_pointer(event)
 
+    # wall behind a blank tab
+    def apply_wall(self):
+        """Read the wall setting. Load its picture once. Show or hide it."""
+        spec = self.store.settings["wall"]
+        kind = self.wall.configure(
+            spec, os.path.join(theme.state_dir(), "background"),
+            self.colors["background"])
+        if kind != spec["kind"]:
+            log.warning("wall falls back to off")
+        self._sync_wall()
+
+    def _sync_wall(self):
+        """Show the wall only over a blank tab that is not in a pair."""
+        tab = self.active
+        blank = (tab is not None and not tab.floating
+                 and tab.url in ("", "about:blank") and self.split_of(tab) is None)
+        want = bool(blank and self.wall.kind != "off")
+        if want != self.wall.get_visible():
+            self.wall.set_visible(want)
+
+    # toast
+    def toast(self, text):
+        """Show a short note over the page for a moment."""
+        self.toast_label.set_text(text)
+        self.toast_label.show()
+        if self._toast_src:
+            GLib.source_remove(self._toast_src)
+        self._toast_src = GLib.timeout_add(TOAST_MS, self._hide_toast)
+
+    def _hide_toast(self):
+        self._toast_src = 0
+        self.toast_label.hide()
+        return False
+
+    # peek: a link in a floating card
+    def _build_peek(self):
+        self.peek_layer = Gtk.EventBox()
+        self.peek_layer.set_visible_window(True)
+        self.peek_layer.get_style_context().add_class("cruxx-scrim")
+        self.peek_layer.connect("button-press-event", self._on_peek_press)
+        self.peek_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.peek_card.set_halign(Gtk.Align.CENTER)
+        self.peek_card.set_valign(Gtk.Align.CENTER)
+        context = self.peek_card.get_style_context()
+        context.add_class("cruxx-card")
+        context.add_class("cruxx-peek")
+        head = Gtk.Box(spacing=8)
+        head.get_style_context().add_class("cruxx-peek-head")
+        self.peek_host = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.peek_host.get_style_context().add_class("cruxx-title")
+        open_button = Gtk.Button(label="Open as tab")
+        open_button.set_relief(Gtk.ReliefStyle.NONE)
+        open_button.get_style_context().add_class("cruxx-action")
+        open_button.connect("clicked", lambda *_: self.adopt_peek())
+        close_button = Gtk.Button()
+        close_button.set_relief(Gtk.ReliefStyle.NONE)
+        close_button.add(Glyph("close", 24, 7, 1.4))
+        close_button.set_tooltip_text("Close (Esc)")
+        close_button.connect("clicked", lambda *_: self.close_peek())
+        head.pack_start(self.peek_host, True, True, 0)
+        head.pack_end(close_button, False, False, 0)
+        head.pack_end(open_button, False, False, 0)
+        # GTK CSS cannot clip a child to round corners. A margin keeps the page
+        # away from the corners of the card.
+        self.peek_body = Gtk.Box()
+        self.peek_body.set_margin_start(8)
+        self.peek_body.set_margin_end(8)
+        self.peek_body.set_margin_bottom(8)
+        self.peek_card.pack_start(head, False, False, 0)
+        self.peek_card.pack_start(self.peek_body, True, True, 0)
+        self.peek_layer.add(self.peek_card)
+        self.peek_card.show_all()
+
+    def _size_peek(self, overlay, alloc):
+        self.peek_card.set_size_request(int(alloc.width * PEEK_SHARE),
+                                        int(alloc.height * PEEK_SHARE))
+
+    def _on_peek_press(self, _layer, event):
+        """A click on the dim area, outside the card, closes the peek."""
+        if event.window is self.peek_layer.get_window():
+            box = self.peek_card.get_allocation()
+            inside = (box.x <= event.x < box.x + box.width
+                      and box.y <= event.y < box.y + box.height)
+            if not inside:
+                self.close_peek()
+        return True
+
+    def _set_peek_head(self, tab):
+        self.peek_host.set_text(tab.host or tab.url or "")
+        self.peek_host.set_tooltip_text(security.display_uri(tab.url, 200))
+
+    def open_peek(self, source, uri):
+        """Show URI in a card over the page of SOURCE. One card at a time."""
+        if source is not self.active or source.view is None:
+            return False
+        self.close_peek(refocus=False)
+        self.close_find()
+        self.hide_prompts(refocus=False)
+        # Same private rule as the source tab: the context and rules come from Tab.
+        peek = Tab(self, "", private=source.private, peek=True)
+        peek.load(uri, clean=True)
+        if peek.view is None:
+            return False
+        self.peek = peek
+        self._set_peek_head(peek)
+        self.peek_layer.show()
+        peek.view.grab_focus()
+        return False
+
+    def add_peek_view(self, tab):
+        tab.view.show()
+        tab.view.connect("close", lambda *_: self.close_peek())
+        self.peek_body.pack_start(tab.view, True, True, 0)
+
+    def close_peek(self, refocus=True):
+        """Close the card. Destroy its WebView."""
+        tab = self.peek
+        if tab is None:
+            return
+        self.peek = None
+        self.peek_layer.hide()
+        self._destroy_view(tab)
+        if refocus and self.active is not None and self.active.view is not None:
+            self.active.view.grab_focus()
+
+    def adopt_peek(self):
+        """Move the page of the card into a new tab. The page does not reload."""
+        tab = self.peek
+        if tab is None or tab.view is None:
+            return
+        self.peek = None
+        self.peek_layer.hide()
+        tab.peek = False
+        tab.stored_url = tab.view.get_uri() or tab.stored_url
+        tab.view.connect("focus-in-event", self._on_view_focus, tab)
+        self.tabs.append(tab)
+        self._sort_tabs()
+        self.select_tab(tab)
+
+    # video float: the WebView of a tab moves into a small window
+    def toggle_float(self):
+        tab = self.active
+        if tab is None:
+            return
+        if tab.floating:
+            self.unfloat(tab)
+            return
+        view = tab.view
+        if view is None or not tab.url or self.split_of(tab) is not None:
+            self.toast("No video on this page")
+            return
+
+        def found(_view, result, _data=None):
+            try:
+                value = view.run_javascript_in_world_finish(result).get_js_value()
+                ok = value.to_boolean()
+            except GLib.Error as exc:
+                log.debug("video search failed: %s", exc.message)
+                ok = False
+            if tab.view is not view or tab.floating:
+                return
+            if ok:
+                self._start_float(tab)
+            else:
+                self.toast("No video on this page")
+
+        view.run_javascript_in_world(read_resource("float-find.js"), "cruxx", None, found, None)
+
+    def _start_float(self, tab):
+        view = tab.view
+        token = floatvideo.new_token()
+        win = Gtk.Window(title=floatvideo.title_for(token))
+        win.token = token
+        win.set_default_size(floatvideo.FLOAT_W, floatvideo.FLOAT_H)
+        win.set_keep_above(True)
+        win.connect("delete-event", lambda *_: self.unfloat(tab) or True)
+        win.connect("key-press-event", self._on_float_key, tab)
+        parent = view.get_parent()
+        if parent is not None:
+            parent.remove(view)
+        win.add(view)
+        tab.floating = True
+        self.floats[tab] = win
+        view.show()
+        win.show()
+        tab.run_in_world(read_resource("float-on.js"))
+        if tab is self.active:
+            self._show(tab)
+        self.refresh()
+        self._float_on_desktop(token)
+
+    def _on_float_key(self, _win, event, tab):
+        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        both = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
+        name = Gdk.keyval_name(Gdk.keyval_to_lower(event.keyval)) or ""
+        if state == both and name == "p":
+            GLib.idle_add(self.unfloat, tab)
+            return True
+        return False
+
+    def _release_float(self, tab):
+        """Take the WebView out of its float window. Close that window."""
+        win = self.floats.pop(tab, None)
+        if win is None:
+            return False
+        tab.floating = False
+        view = tab.view
+        if view is not None:
+            tab.run_in_world(read_resource("float-off.js"))
+            if view.get_parent() is win:
+                win.remove(view)
+        win.destroy()
+        return True
+
+    def unfloat(self, tab):
+        """Put the WebView back in its tab. Remove the float style."""
+        if not self._release_float(tab):
+            return False
+        if tab.view is not None:
+            self._place(tab)
+            if tab is self.active:
+                self._show(tab)
+                tab.view.grab_focus()
+        self.refresh()
+        return False
+
+    # Hyprland: float, size, move and pin the window. Only when Hyprland runs.
+    def _float_on_desktop(self, token):
+        if not (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+                and GLib.find_program_in_path("hyprctl")):
+            return
+
+        def start():
+            self._spawn(["hyprctl", "monitors", "-j"], lambda ok, out: self._place_float(
+                token, floatvideo.corner_position(out) if ok else None))
+            return False
+
+        GLib.timeout_add(HYPR_DELAY_MS, start)
+
+    def _place_float(self, token, corner):
+        x, y = corner if corner else (None, None)
+        self._hypr_chain(floatvideo.steps(token, x, y))
+
+    def _hypr_chain(self, items):
+        """Run each step. If the Lua call fails, run the older name."""
+        if not items:
+            return
+        lua, legacy = items[0]
+
+        def after_lua(ok, _out):
+            if ok:
+                self._hypr_chain(items[1:])
+                return
+
+            def after_legacy(ok2, _out2):
+                if not ok2:
+                    log.debug("hyprctl step failed")
+                self._hypr_chain(items[1:])
+
+            self._spawn(floatvideo.argv(*legacy), after_legacy)
+
+        self._spawn(floatvideo.argv(lua), after_lua)
+
+    def _spawn(self, argv, done):
+        """Run ARGV (a list, never a shell). Call DONE(ok, stdout) at the end."""
+        try:
+            proc = Gio.Subprocess.new(
+                argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error as exc:
+            log.debug("spawn failed: %s", exc.message)
+            done(False, "")
+            return
+
+        def finished(_proc, result):
+            try:
+                _ok, out, _err = proc.communicate_utf8_finish(result)
+            except GLib.Error as exc:
+                log.debug("spawn read failed: %s", exc.message)
+                done(False, "")
+                return
+            out = out or ""
+            good = proc.get_successful() and (argv[1:2] != ["dispatch"] or out.strip() == "ok")
+            done(good, out)
+
+        proc.communicate_utf8_async(None, None, finished)
+
     # layout
     def _layout(self):
         self.strip.set_mode(self.side)
@@ -1054,6 +1376,7 @@ class Window(Gtk.ApplicationWindow):
         if tab not in self.tabs:
             return
         self.close_find()
+        self.close_peek(refocus=False)
         self.hide_prompts(refocus=False)
         self._hide_status()
         now = time.monotonic()
@@ -1066,6 +1389,7 @@ class Window(Gtk.ApplicationWindow):
         self._show(tab)
         self._sync_bars()
         self._sync_strip()
+        self._sync_wall()
         self.schedule_save()
         if tab.url:
             tab.view.grab_focus()
@@ -1127,22 +1451,27 @@ class Window(Gtk.ApplicationWindow):
     # tab callbacks
     def tab_changed(self, tab):
         """A title, address or icon changed. Update its row in place."""
+        if tab.peek:
+            self._set_peek_head(tab)
+            return
         self.strip.update(tab, self.active)
         self.schedule_save()
         if tab is self.active:
             self._set_title()
+            self._sync_wall()
 
     def load_changed(self, tab, event):
         if event == WebKit2.LoadEvent.FINISHED:
+            # A private peek is not recorded, like a private tab.
             if not tab.private:
                 self.store.add_visit(tab.url, tab.title if tab.view.get_title() else "")
-            if self.finished_cb:
+            if self.finished_cb and not tab.peek:
                 self.finished_cb(tab)
         if event in (WebKit2.LoadEvent.COMMITTED, WebKit2.LoadEvent.FINISHED):
             self.tab_changed(tab)
 
     def load_failed(self, tab):
-        if self.failed_cb:
+        if self.failed_cb and not tab.peek:
             self.failed_cb(tab)
 
     # address field and tab switcher
@@ -1652,7 +1981,9 @@ class Window(Gtk.ApplicationWindow):
         return True
 
     def _escape(self):
-        if self.prompt.is_open() or self.switcher.is_open():
+        if self.peek is not None:
+            self.close_peek()
+        elif self.prompt.is_open() or self.switcher.is_open():
             self.hide_prompts()
         elif self.panel.is_open():
             self.panel.close()
@@ -1734,7 +2065,7 @@ class Window(Gtk.ApplicationWindow):
         for index, tab in enumerate(everything):
             view = tab.view
             infos.append({
-                "id": index, "selected": tab in visible,
+                "id": index, "selected": tab in visible or tab.floating,
                 "last_active": tab.last_active, "has_view": view is not None,
                 "playing": bool(view is not None and view.is_playing_audio()),
                 "downloading": self._download_pending(tab), "pinned": tab.pinned,
@@ -1745,7 +2076,7 @@ class Window(Gtk.ApplicationWindow):
     def sleep_tab(self, tab):
         """Save the state of TAB and destroy its WebView. The row stays."""
         view = tab.view
-        if view is None or tab in self.visible_tabs():
+        if view is None or tab.floating or tab in self.visible_tabs():
             return
         tab.stored_url = view.get_uri() or tab.stored_url
         if view.get_title():

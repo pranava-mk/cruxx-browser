@@ -104,6 +104,11 @@ class TabRow(Gtk.EventBox):
         box.pack_start(self.mark, False, False, 0)
         box.pack_start(self.label, True, True, 0)
         box.pack_end(self.close, False, False, 0)
+        # A small note while the video of this tab floats in its own window.
+        self.float_mark = Gtk.Label(label="floating")
+        self.float_mark.get_style_context().add_class("cruxx-float-mark")
+        self.float_mark.set_no_show_all(True)
+        box.pack_end(self.float_mark, False, False, 0)
         self.add(box)
         self.connect("button-press-event", self._on_press)
         track_hover(self, self._hover)
@@ -183,7 +188,7 @@ class TabRow(Gtk.EventBox):
         tab = self.tab
         paired = self.win.pair_state(tab)
         state = (tab.title, tab.favicon, tab.url, live, tab.private, tab.blocked_popups,
-                 paired)
+                 paired, tab.floating)
         if state == self._shown:
             return
         self._shown = state
@@ -191,6 +196,7 @@ class TabRow(Gtk.EventBox):
             self.label.set_text(tab.title)
         blank = not tab.url or tab.url == "about:blank"
         self.mark.set_visible(not blank)
+        self.float_mark.set_visible(tab.floating)
         self.mark.set_content(tab.favicon, letter_for(tab.url, tab.title))
         context = self.get_style_context()
         for name, on in (("live", live), ("private", tab.private),
@@ -259,14 +265,15 @@ class PinTile(Gtk.EventBox):
 
     def update(self, live):
         tab = self.tab
-        state = (tab.title, tab.favicon, tab.url, live, tab.private)
+        state = (tab.title, tab.favicon, tab.url, live, tab.private, tab.floating)
         if state == self._shown:
             return
         self._shown = state
         self.mark.set_content(tab.favicon, letter_for(tab.url, tab.title))
         context = self.get_style_context()
         (context.add_class if live else context.remove_class)("live")
-        self.set_tooltip_text(tab.title)
+        (context.add_class if tab.floating else context.remove_class)("floating")
+        self.set_tooltip_text(tab.title + (" (floating)" if tab.floating else ""))
 
 
 class NewRow(Gtk.EventBox):
