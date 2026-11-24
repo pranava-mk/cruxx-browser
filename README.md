@@ -27,6 +27,12 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Permission requests with Allow and Deny. The default is deny.
 - Error page for TLS errors. No bypass button.
 - Popup blocking. A popup opens only after a user gesture.
+- Tab sleep. A background tab that you did not use for 30 minutes frees its web process. The tab row stays. When you select the tab, it loads its page again. The setting `sleep_after_min` in `settings.json` sets the time (0 = never). A selected tab, a tab that plays sound, a tab with a download, and a pinned tab do not sleep. Set `sleep_pinned` to `true` to let pinned tabs sleep.
+- Keep an important site awake. Set `keep_awake_enabled` to `true`, or use "Offer keep-awake for sites" in the settings menu. Then the settings menu and the tab context menu (right-click) show "Keep This Site Awake". The site is saved in `keep_awake_hosts`. For a private tab the choice stays in memory only. A tab of a site that is kept awake never sleeps.
+- Memory limit. If WebKit supports it, the app sets a memory limit for the web processes (25% of RAM, from 512 MB to 4 GB). WebKit then frees memory early when the limit is near.
+- Clean links. When you type or paste an address, or open a link in a new tab, the app removes tracking parameters (utm_*, fbclid, gclid, msclkid, and others). Other parameters and the part after # stay. Links that the page itself opens are not changed.
+- Rename a tab. Double-click the tab title, or right-click and choose "Rename tab". Enter saves, Esc cancels, an empty name resets the title. The name is saved in the session. A private tab does not save it.
+- Drag tabs to change their order, in the tab column and in the top strip. Drop a tab on the pinned tiles to pin it. Drag a pinned tile into the list to unpin it. The order is saved in the session.
 - Find in page, zoom, fullscreen, and a tab switcher (Ctrl+K, a floating list with fuzzy match on title and address).
 
 ## Keyboard
@@ -39,10 +45,12 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+L | Show the address field |
 | Ctrl+K | Tab switcher (type to filter, Up, Down, Enter) |
 | Ctrl+R, F5 | Reload |
+| Ctrl+Alt+R | Reload from the origin (ignore the cache) |
 | Ctrl+Shift+R | Reading mode |
 | Ctrl+[, Alt+Left | Back |
 | Ctrl+], Alt+Right | Forward |
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous tab |
+| Ctrl+Shift+], Ctrl+Shift+[ | Next, previous tab |
 | Ctrl+1 to Ctrl+8 | Go to tab 1 to 8 |
 | Ctrl+9 | Go to last tab |
 | Ctrl+F | Find in page |

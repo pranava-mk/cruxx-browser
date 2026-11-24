@@ -216,7 +216,7 @@ class AddressPrompt(Prompt):
 
     def take(self, offer):
         self.win.hide_prompts()
-        self.win.open_in_current(offer["url"])
+        self.win.open_in_current(offer["url"], clean=True)
         if self.win.active and self.win.active.view:
             self.win.active.view.grab_focus()
 

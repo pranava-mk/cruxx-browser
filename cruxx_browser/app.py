@@ -72,6 +72,8 @@ class CruxxApp(Gtk.Application):
         GLib.timeout_add_seconds(5, self._flush)
         if opts.test_url:
             self.window.finished_cb = self._test_finished
+            if opts.test_sleep:
+                self.window.finished_cb = self._sleep_probe_cb
             self.window.failed_cb = lambda _tab: self._exit(2)
             GLib.timeout_add_seconds(TEST_TIMEOUT_S, lambda: self._exit(3))
             GLib.idle_add(self._start_test, opts.test_url)
@@ -85,6 +87,37 @@ class CruxxApp(Gtk.Application):
     def _start_test(self, url):
         self.window.open_tab(url)
         return False
+
+    def _sleep_probe(self, tab):
+        """Hidden test: sleep a loaded tab, wake it, exit 0 if all is right."""
+        win = self.window
+        state = {"step": 0}
+
+        def check(done_tab):
+            if state["step"] == 0:
+                state["step"] = 1
+                other = win.open_tab("about:blank")
+                tab.last_active -= 10000
+                win.sleep_override_min = 0.001
+                win.sleep_tick()
+                if tab.view is not None or other.view is None:
+                    log.error("sleep probe: tab did not sleep")
+                    self._exit(4)
+                    return
+                win.select_tab(tab)
+                if tab.view is None:
+                    log.error("sleep probe: tab did not wake")
+                    self._exit(4)
+            elif state["step"] == 1 and done_tab is tab:
+                self._exit(0)
+
+        win.finished_cb = check
+        return False
+
+    def _sleep_probe_cb(self, tab):
+        self.window.finished_cb = None
+        self._sleep_probe(tab)
+        self.window.finished_cb(tab)
 
     def _test_finished(self, _tab):
         if self.opts.test_exit_after_load:

@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import security
+from . import security, sleep
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,10 @@ DEFAULT_SETTINGS = {
     "shield_enabled": True,
     "shield_paused_hosts": [],
     "permissions": {},
+    "sleep_after_min": 30,
+    "sleep_pinned": False,
+    "keep_awake_enabled": False,
+    "keep_awake_hosts": [],
 }
 
 
@@ -143,7 +147,7 @@ def _clean_list(items, shape, allow_empty_url=False):
 
 _HISTORY_SHAPE = {"url": str, "title": str, "visits": int, "last": (int, float)}
 _BOOKMARK_SHAPE = {"url": str, "title": str}
-_TAB_SHAPE = {"url": str, "title": str, "pinned": bool}
+_TAB_SHAPE = {"url": str, "title": str, "pinned": bool, "custom_title": str}
 
 
 class Store:
@@ -179,6 +183,13 @@ class Store:
         hosts = raw.get("shield_paused_hosts")
         if isinstance(hosts, list):
             out["shield_paused_hosts"] = [h for h in hosts if isinstance(h, str)]
+        for key in ("sleep_pinned", "keep_awake_enabled"):
+            if isinstance(raw.get(key), bool):
+                out[key] = raw[key]
+        out["sleep_after_min"] = sleep.clean_minutes(raw.get("sleep_after_min", 30))
+        awake = raw.get("keep_awake_hosts")
+        if isinstance(awake, list):
+            out["keep_awake_hosts"] = [h for h in awake if isinstance(h, str)]
         perms = raw.get("permissions")
         if isinstance(perms, dict):
             for host, kinds in perms.items():
@@ -190,6 +201,20 @@ class Store:
 
     def save_settings(self):
         write_json_atomic(self._p("settings.json"), self.settings)
+
+    def keep_awake(self, host):
+        return registrable_host(host) in self.settings["keep_awake_hosts"]
+
+    def set_keep_awake(self, host, on):
+        site = registrable_host(host)
+        hosts = self.settings["keep_awake_hosts"]
+        if on and site and site not in hosts:
+            hosts.append(site)
+        elif not on and site in hosts:
+            hosts.remove(site)
+        else:
+            return
+        self.save_settings()
 
     def shield_paused(self, host):
         return registrable_host(host) in self.settings["shield_paused_hosts"]
@@ -281,7 +306,13 @@ class Store:
         raw = read_json(self._p("session.json"), {})
         if not isinstance(raw, dict):
             raw = {}
-        tabs = _clean_list(raw.get("tabs"), _TAB_SHAPE, allow_empty_url=True)
+        rows = raw.get("tabs")
+        if isinstance(rows, list):
+            # Older sessions have no custom title.
+            rows = [dict(r, custom_title=r["custom_title"][:200]
+                         if isinstance(r.get("custom_title"), str) else "")
+                    for r in rows if isinstance(r, dict)]
+        tabs = _clean_list(rows, _TAB_SHAPE, allow_empty_url=True)
         active = raw.get("active")
         if not isinstance(active, int) or isinstance(active, bool) or not 0 <= active < len(tabs):
             active = 0

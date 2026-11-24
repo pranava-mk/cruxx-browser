@@ -3,6 +3,7 @@
 import html
 import logging
 import os
+import time
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -10,7 +11,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
-from . import omnibox, security, store, theme  # noqa: E402
+from . import cleanlink, memory, omnibox, reorder, security, sleep, store, theme  # noqa: E402
 from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
                          SwitcherPrompt)
 from .sidebar import TabStrip  # noqa: E402
@@ -47,6 +48,7 @@ TLS_REASONS = (
 
 def _configure_context(ctx):
     """Harden and tune a WebContext. Sandbox first."""
+    memory.apply(WebKit2)
     ctx.set_sandbox_enabled(True)
     ctx.set_process_model(WebKit2.ProcessModel.MULTIPLE_SECONDARY_PROCESSES)
     ctx.set_cache_model(WebKit2.CacheModel.WEB_BROWSER)
@@ -257,6 +259,9 @@ class Window(Gtk.ApplicationWindow):
         # Private tab data. It lives in memory for this window only.
         self.private_paused = set()
         self.private_grants = {}
+        self.dragging = None
+        self.private_awake = set()
+        self.sleep_override_min = None
         self._external_open = False
         self.colors = theme.load()
         self._apply_theme()
@@ -268,6 +273,7 @@ class Window(Gtk.ApplicationWindow):
         self._build()
         self.connect("key-press-event", self._on_key)
         self.connect("window-state-event", self._on_state)
+        GLib.timeout_add_seconds(sleep.CHECK_SECONDS, self._sleep_timer)
 
     # construction
     def _build(self):
@@ -343,7 +349,15 @@ class Window(Gtk.ApplicationWindow):
         hide.connect("activate", lambda *_: self.start_hide())
         unhide = Gtk.MenuItem(label="Show hidden elements on this site")
         unhide.connect("activate", lambda *_: self.unhide_site())
-        for item in (self.pause_item, reader, hide, unhide, self.popup_item):
+        origin = Gtk.MenuItem(label="Reload from origin (Ctrl+Alt+R)")
+        origin.connect("activate", lambda *_: self._reload_origin())
+        self.awake_item = Gtk.CheckMenuItem(label="Keep This Site Awake")
+        self.awake_item.set_no_show_all(True)
+        self.awake_item.connect("toggled", self._on_awake_toggled)
+        self.awake_enable_item = Gtk.CheckMenuItem(label="Offer keep-awake for sites")
+        self.awake_enable_item.connect("toggled", self._on_awake_enable_toggled)
+        for item in (self.pause_item, reader, hide, unhide, origin, self.awake_item,
+                     self.awake_enable_item, self.popup_item):
             menu.append(item)
         menu.show_all()
         menu.connect("show", self._on_menu_show)
@@ -357,6 +371,11 @@ class Window(Gtk.ApplicationWindow):
             self.store.shield_paused(tab.host)
             or (tab.private and store.registrable_host(tab.host) in self.private_paused)))
         self.pause_item.set_active(paused)
+        enabled = self.store.settings["keep_awake_enabled"]
+        self.awake_enable_item.set_active(enabled)
+        self.awake_item.set_visible(enabled)
+        self.awake_item.set_sensitive(bool(tab and tab.host))
+        self.awake_item.set_active(bool(tab and self.is_kept_awake(tab)))
         self._menu_updating = False
         self.popup_item.set_label("Blocked popups: %d" % (tab.blocked_popups if tab else 0))
 
@@ -495,7 +514,11 @@ class Window(Gtk.ApplicationWindow):
     def _sort_tabs(self):
         self.tabs.sort(key=lambda t: not t.pinned)
 
-    def open_tab(self, url="", private=False, background=False, title="", pinned=False):
+    def open_tab(self, url="", private=False, background=False, title="", pinned=False,
+                 clean=False):
+        """Open a tab. If CLEAN is true, the user chose URL: drop tracking parameters."""
+        if clean and url:
+            url = cleanlink.clean_link(url)
         tab = Tab(self, url, title, pinned, private)
         self.tabs.append(tab)
         self._sort_tabs()
@@ -508,11 +531,11 @@ class Window(Gtk.ApplicationWindow):
                 self.focus_omnibox()
         return tab
 
-    def open_in_current(self, url):
+    def open_in_current(self, url, clean=False):
         if self.active is None:
-            self.open_tab(url)
+            self.open_tab(url, clean=clean)
         else:
-            self.active.load(url)
+            self.active.load(url, clean=clean)
 
     def select_tab(self, tab):
         if tab not in self.tabs:
@@ -520,6 +543,10 @@ class Window(Gtk.ApplicationWindow):
         self.close_find()
         self.hide_prompts(refocus=False)
         self._hide_status()
+        now = time.monotonic()
+        if self.active is not None:
+            self.active.last_active = now
+        tab.last_active = now
         self.active = tab
         if not tab.private:
             self._last_normal = self.tabs.index(tab)
@@ -783,7 +810,7 @@ class Window(Gtk.ApplicationWindow):
         def got(_clipboard, text):
             url = omnibox.classify(text or "", self.store.settings["engine"])
             if url:
-                self.open_in_current(url)
+                self.open_in_current(url, clean=True)
         Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).request_text(got)
 
     def bookmark(self):
@@ -936,7 +963,8 @@ class Window(Gtk.ApplicationWindow):
     # downloads
     def _on_download_started(self, _ctx, download):
         item = {"name": "download", "progress": 0.0, "done": False,
-                "failed": False, "dir": "", "download": download}
+                "failed": False, "dir": "", "download": download,
+                "view": download.get_web_view()}
         self.downloads.append(item)
         del self.downloads[:-50]
         download.connect("decide-destination", self._on_decide_destination, item)
@@ -999,7 +1027,8 @@ class Window(Gtk.ApplicationWindow):
             active = normal.index(self.active)
         else:
             active = max(0, min(self._last_normal, len(normal) - 1))
-        rows = [{"url": t.url, "title": t.title, "pinned": t.pinned} for t in normal]
+        rows = [{"url": t.url, "title": t.page_title, "pinned": t.pinned,
+                 "custom_title": t.custom_title} for t in normal]
         try:
             self.store.save_session(rows, active, self.side)
         except OSError as exc:
@@ -1010,7 +1039,9 @@ class Window(Gtk.ApplicationWindow):
         self.side = session["side"]
         self._layout()
         for entry in session["tabs"]:
-            self.tabs.append(Tab(self, entry["url"], entry["title"], entry["pinned"]))
+            tab = Tab(self, entry["url"], entry["title"], entry["pinned"])
+            tab.custom_title = entry["custom_title"]
+            self.tabs.append(tab)
         self._sort_tabs()
         if self.tabs:
             self.select_tab(self.tabs[min(session["active"], len(self.tabs) - 1)])
@@ -1045,6 +1076,10 @@ class Window(Gtk.ApplicationWindow):
             return False
         if not ctrl:
             return False
+        if alt and not shift and name == "r":
+            return self._do(self._reload_origin)
+        if shift and name in ("bracketleft", "braceleft", "bracketright", "braceright"):
+            return self._do(lambda: self.cycle(-1 if "left" in name else 1))
         if name in ("plus", "equal", "KP_Add"):
             return self._do(lambda: self.zoom(ZOOM_STEP))
         if name in ("minus", "KP_Subtract"):
@@ -1097,6 +1132,143 @@ class Window(Gtk.ApplicationWindow):
     def _reload(self):
         if self.active and self.active.view:
             self.active.view.reload()
+
+    def _reload_origin(self):
+        if self.active and self.active.view:
+            self.active.view.reload_bypass_cache()
+
+    # sleep, keep awake, rename, drag
+    def is_kept_awake(self, tab):
+        site = store.registrable_host(tab.host)
+        if not site:
+            return False
+        if tab.private:
+            return site in self.private_awake
+        return self.store.keep_awake(tab.host)
+
+    def set_kept_awake(self, tab, on):
+        site = store.registrable_host(tab.host)
+        if not site:
+            return
+        if tab.private:
+            # A private tab must not write to settings.json.
+            (self.private_awake.add if on else self.private_awake.discard)(site)
+            return
+        try:
+            self.store.set_keep_awake(tab.host, on)
+        except OSError as exc:
+            log.warning("keep awake save failed: %s", exc)
+
+    def _on_awake_toggled(self, item):
+        if not self._menu_updating and self.active is not None:
+            self.set_kept_awake(self.active, item.get_active())
+
+    def _on_awake_enable_toggled(self, item):
+        if self._menu_updating:
+            return
+        self.store.settings["keep_awake_enabled"] = item.get_active()
+        try:
+            self.store.save_settings()
+        except OSError as exc:
+            log.warning("settings save failed: %s", exc)
+
+    def _download_pending(self, tab):
+        for item in self.downloads:
+            if item["done"] or item["failed"]:
+                continue
+            # A download with no known view blocks sleep for all tabs.
+            if item.get("view") is None or item["view"] is tab.view:
+                return True
+        return False
+
+    def _sleep_timer(self):
+        self.sleep_tick()
+        return True
+
+    def sleep_tick(self):
+        """Put the tabs that were not used for a long time to sleep."""
+        now = time.monotonic()
+        if self.active is not None:
+            self.active.last_active = now
+        settings = self.store.settings
+        wanted = {"sleep_after_min": (settings["sleep_after_min"]
+                                      if self.sleep_override_min is None
+                                      else self.sleep_override_min),
+                  "sleep_pinned": settings["sleep_pinned"]}
+        enabled = settings["keep_awake_enabled"]
+        infos = []
+        for index, tab in enumerate(self.tabs):
+            view = tab.view
+            infos.append({
+                "id": index, "selected": tab is self.active,
+                "last_active": tab.last_active, "has_view": view is not None,
+                "playing": bool(view is not None and view.is_playing_audio()),
+                "downloading": self._download_pending(tab), "pinned": tab.pinned,
+                "keep_awake": enabled and self.is_kept_awake(tab)})
+        for index in sleep.candidates(infos, now, wanted):
+            self.sleep_tab(self.tabs[index])
+
+    def sleep_tab(self, tab):
+        """Save the state of TAB and destroy its WebView. The row stays."""
+        view = tab.view
+        if view is None or tab is self.active:
+            return
+        tab.stored_url = view.get_uri() or tab.stored_url
+        if view.get_title():
+            tab.stored_title = view.get_title()
+        self.clear_permission_bars(tab)
+        self.stack.remove(view)
+        view.destroy()
+        tab.view = None
+        tab.manager = None
+        tab.reader = False
+        log.debug("tab put to sleep")
+        self.refresh()
+
+    def set_custom_title(self, tab, text):
+        """Set the title the user typed. An empty text resets it."""
+        tab.custom_title = " ".join(text.split())[:200]
+        self.tab_changed(tab)
+        if tab is self.active and tab.view is not None:
+            tab.view.grab_focus()
+
+    def rename_tab(self, tab):
+        widget = self.strip.items.get(tab)
+        if widget is not None:
+            widget.start_rename()
+
+    def tab_menu(self, tab, event):
+        menu = Gtk.Menu()
+        rename = Gtk.MenuItem(label="Rename tab")
+        rename.connect("activate", lambda *_: self.rename_tab(tab))
+        menu.append(rename)
+        if self.store.settings["keep_awake_enabled"] and tab.host:
+            awake = Gtk.CheckMenuItem(label="Keep This Site Awake")
+            awake.set_active(self.is_kept_awake(tab))
+            awake.connect("toggled", lambda i: self.set_kept_awake(tab, i.get_active()))
+            menu.append(awake)
+        menu.show_all()
+        menu.attach_to_widget(self.strip.items.get(tab) or self, None)
+        menu.connect("selection-done", lambda m: GLib.idle_add(m.destroy))
+        menu.popup_at_pointer(event)
+
+    def drag_begin(self, tab):
+        self.dragging = tab
+        self.strip.drag_zone(True)
+
+    def drag_end(self):
+        self.dragging = None
+        self.strip.drag_zone(False)
+
+    def drop_tab(self, target, after, pin):
+        tab = self.dragging
+        if tab is None or tab not in self.tabs:
+            return
+        if target is tab:
+            return
+        if reorder.move_tab(self.tabs, tab, target, after, pin):
+            self.refresh()
+            self.schedule_save()
 
     def _back(self):
         if self.active and self.active.view and self.active.view.can_go_back():

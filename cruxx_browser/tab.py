@@ -10,7 +10,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, WebKit2  # noqa: E402
 
-from . import security, store  # noqa: E402
+from . import cleanlink, security, store  # noqa: E402
 
 log = logging.getLogger(__name__)
 WORLD = "cruxx"
@@ -47,6 +47,9 @@ class Tab:
         self.favicon = None
         self.blocked_popups = 0
         self.reader = False
+        self.custom_title = ""
+        self.last_active = time.monotonic()
+        self.manager = None
         self._actions = []
         self._last_popup = None
 
@@ -58,10 +61,14 @@ class Tab:
         return self.stored_url
 
     @property
-    def title(self):
+    def page_title(self):
         if self.view is not None and self.view.get_title():
             return self.view.get_title()
         return self.stored_title or self.url or "New tab"
+
+    @property
+    def title(self):
+        return self.custom_title or self.page_title
 
     @property
     def host(self):
@@ -108,8 +115,13 @@ class Tab:
             self.load(url)
         return view
 
-    def load(self, url):
-        """Load URL. Set the shield state for its host just before the load."""
+    def load(self, url, clean=False):
+        """Load URL. Set the shield state for its host just before the load.
+
+        If CLEAN is true, the user started the load: remove tracking parameters.
+        """
+        if clean:
+            url = cleanlink.clean_link(url)
         if not security.loadable(url):
             log.debug("load refused: scheme not allowed")
             return
@@ -210,7 +222,7 @@ class Tab:
         uri = action.get_request().get_uri()
         if security.scheme_decision(uri, True) == "allow":
             self._last_popup = now
-            self.win.open_tab(uri, private=self.private)
+            self.win.open_tab(uri, private=self.private, clean=True)
         return None
 
     def _on_target(self, _view, hit, _modifiers):
@@ -252,7 +264,7 @@ class Tab:
             if security.scheme_decision(link, True) == "allow":
                 action = Gio.SimpleAction.new("open-in-new-tab", None)
                 action.connect("activate", lambda *_a: self.win.open_tab(
-                    link, private=self.private, background=True))
+                    link, private=self.private, background=True, clean=True))
                 self._actions = [action]
                 menu.append(WebKit2.ContextMenuItem.new_from_gaction(
                     action, "Open link in new tab", None))

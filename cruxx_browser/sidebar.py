@@ -29,6 +29,46 @@ SIDE_ROW = {"lead": 10, "mark": 15, "gap": 8, "trail": 7}
 TOP_ROW = {"lead": 11, "mark": 15, "gap": 6, "trail": 7}
 
 
+DND_TARGET = "application/x-cruxx-tab"
+
+
+def _targets():
+    return [Gtk.TargetEntry.new(DND_TARGET, Gtk.TargetFlags.SAME_APP, 0)]
+
+
+def make_source(widget, win, tab):
+    """Let the user drag the row of TAB. Only inside this application."""
+    widget.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, _targets(), Gdk.DragAction.MOVE)
+    widget.connect("drag-begin", lambda _w, _ctx: win.drag_begin(tab))
+    widget.connect("drag-end", lambda _w, _ctx: win.drag_end())
+    widget.connect("drag-data-get", lambda _w, _c, sel, _i, _t: sel.set(sel.get_target(), 8, b"tab"))
+
+
+def make_dest(widget, win, pin, tab=None, horizontal=False):
+    """Accept a dragged tab on WIDGET. Drop before or after TAB, or at the end."""
+
+    def motion(_w, ctx, _x, _y, stamp):
+        if win.dragging is None:
+            return False
+        Gdk.drag_status(ctx, Gdk.DragAction.MOVE, stamp)
+        return True
+
+    def drop(w, ctx, x, y, stamp):
+        if win.dragging is None:
+            return False
+        if horizontal:
+            after = x > w.get_allocated_width() / 2
+        else:
+            after = y > w.get_allocated_height() / 2
+        win.drop_tab(tab, after, pin)
+        Gtk.drag_finish(ctx, True, False, stamp)
+        return True
+
+    widget.drag_dest_set(0, _targets(), Gdk.DragAction.MOVE)
+    widget.connect("drag-motion", motion)
+    widget.connect("drag-drop", drop)
+
+
 class TabRow(Gtk.EventBox):
     """One tab: mark, title and a close button that shows on hover."""
 
@@ -38,9 +78,13 @@ class TabRow(Gtk.EventBox):
         self.tab = tab
         self.set_visible_window(True)
         self.set_size_request(width, ROW_HEIGHT)
+        make_source(self, win, tab)
+        make_dest(self, win, False, tab, horizontal=width != -1)
+        self._entry = None
         context = self.get_style_context()
         context.add_class("cruxx-row")
         box = Gtk.Box(spacing=metrics["gap"])
+        self.box = box
         box.set_margin_start(metrics["lead"])
         box.set_margin_end(metrics["trail"])
         self.mark = Mark(metrics["mark"])
@@ -74,11 +118,49 @@ class TabRow(Gtk.EventBox):
         return True
 
     def _on_press(self, _w, event):
-        if event.button == 1:
+        if event.button == 1 and event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS:
+            self.start_rename()
+        elif event.button == 1 and event.type == Gdk.EventType.BUTTON_PRESS:
             self.win.select_tab(self.tab)
         elif event.button == 2:
             self.win.close_tab(self.tab)
+        elif event.button == 3:
+            self.win.tab_menu(self.tab, event)
         return True
+
+    def start_rename(self):
+        """Show an entry in place of the title. Enter saves, Esc cancels."""
+        if self._entry is not None:
+            return
+        entry = Gtk.Entry()
+        entry.set_max_length(200)
+        entry.set_text(self.tab.title)
+        entry.connect("activate", lambda *_: self._finish(True))
+        entry.connect("focus-out-event", lambda *_: self._finish(False) or False)
+        entry.connect("key-press-event", self._on_entry_key)
+        self._entry = entry
+        self.label.hide()
+        self.box.pack_start(entry, True, True, 0)
+        self.box.reorder_child(entry, 1)
+        entry.show()
+        entry.grab_focus()
+
+    def _on_entry_key(self, _entry, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self._finish(False)
+            return True
+        return False
+
+    def _finish(self, save):
+        entry = self._entry
+        if entry is None:
+            return
+        self._entry = None
+        text = entry.get_text()
+        self.box.remove(entry)
+        self.label.show()
+        if save:
+            self.win.set_custom_title(self.tab, text)
 
     def update(self, live):
         tab = self.tab
@@ -108,6 +190,8 @@ class PinTile(Gtk.EventBox):
         self.tab = tab
         self.set_visible_window(True)
         self.set_size_request(width, height)
+        make_source(self, win, tab)
+        make_dest(self, win, True, tab, horizontal=True)
         self.get_style_context().add_class("cruxx-pin")
         self.mark = Mark(16, plain=True, letter_px=12)
         self.add(self.mark)
@@ -118,11 +202,40 @@ class PinTile(Gtk.EventBox):
         self.update(False)
 
     def _on_press(self, _w, event):
-        if event.button == 1:
+        if event.button == 1 and event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS:
+            self.start_rename()
+        elif event.button == 1 and event.type == Gdk.EventType.BUTTON_PRESS:
             self.win.select_tab(self.tab)
         elif event.button == 2:
             self.win.close_tab(self.tab)
+        elif event.button == 3:
+            self.win.tab_menu(self.tab, event)
         return True
+
+    def start_rename(self):
+        """Ask for a new title in a small popover."""
+        popover = Gtk.Popover.new(self)
+        entry = Gtk.Entry()
+        entry.set_max_length(200)
+        entry.set_text(self.tab.title)
+        state = {"save": False}
+
+        def activate(*_):
+            state["save"] = True
+            popover.popdown()
+
+        def closed(*_):
+            if state["save"]:
+                self.win.set_custom_title(self.tab, entry.get_text())
+            GLib.idle_add(popover.destroy)
+
+        entry.connect("activate", activate)
+        popover.connect("closed", closed)
+        popover.set_border_width(6)
+        popover.add(entry)
+        entry.show()
+        popover.popup()
+        entry.grab_focus()
 
     def update(self, live):
         tab = self.tab
@@ -157,6 +270,7 @@ class NewRow(Gtk.EventBox):
             self.set_tooltip_text("New tab")
         self.add(box)
         self.win = win
+        make_dest(self, win, False, None)
         self.connect("button-press-event", self._on_press)
         track_hover(self)
         self.show_all()
@@ -189,7 +303,9 @@ class TabStrip:
         self.pins_flow.set_halign(Gtk.Align.START)
         self.pins_flow.set_valign(Gtk.Align.START)
         self.pins_flow.set_no_show_all(True)
+        make_dest(self.pins_flow, win, True, None, horizontal=True)
         self.rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=ROW_GAP)
+        make_dest(self.rows_box, win, False, None)
         self.side_new = NewRow(win, True)
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.set_margin_start(SIDE_PAD)
@@ -221,6 +337,7 @@ class TabStrip:
         # Top strip: one scrolled row, then the settings button.
         self.top_box = Gtk.Box(spacing=ROW_GAP)
         self.top_box.set_margin_start(8)
+        make_dest(self.top_box, win, False, None, horizontal=True)
         self.top_box.set_valign(Gtk.Align.CENTER)
         self.top_scroll = Gtk.ScrolledWindow(hexpand=True)
         self.top_scroll.get_style_context().add_class("cruxx-scroll")
@@ -272,6 +389,15 @@ class TabStrip:
             foot.pack_start(button, False, False, 0)
             button.show_all()
         button.set_direction(Gtk.ArrowType.UP if left else Gtk.ArrowType.DOWN)
+
+    def drag_zone(self, on):
+        """Show an empty pin area while a tab is dragged, so it can be pinned."""
+        if on:
+            self.pins_flow.set_size_request(-1, PIN_SIZE)
+            self.pins_flow.set_visible(True)
+        else:
+            self.pins_flow.set_size_request(-1, -1)
+            self.pins_flow.set_visible(bool(self.pins_flow.get_children()))
 
     # content
     def sync(self, tabs, active):

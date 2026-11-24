@@ -20,6 +20,7 @@ def build_parser():
     parser.add_argument("--private", "--incognito", "--private-window",
                         dest="private", action="store_true", help="open a private tab")
     parser.add_argument("--test-url", help=argparse.SUPPRESS)
+    parser.add_argument("--test-sleep", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--test-exit-after-load", action="store_true",
                         help=argparse.SUPPRESS)
     return parser
