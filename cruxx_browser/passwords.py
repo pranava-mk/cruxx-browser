@@ -38,6 +38,9 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+BAR_SECONDS = 120
+
+
 class Passwords:
     def __init__(self, win):
         self.win = win
@@ -50,6 +53,7 @@ class Passwords:
         self._token = 0
         self._panel = None
         self._copy_src = 0
+        self._copied = None
         probe = getattr(self.backend, "probe", None)
         if probe is not None:
             probe(self._probed)
@@ -108,9 +112,26 @@ class Passwords:
             return
         if origin in self.win.store.settings["password_never"]:
             return
+        self._drop_pending(tab)
         tab.pw_pending = {"origin": origin, "username": message["username"],
                           "password": message["password"], "time": time.monotonic()}
+        # Forget the credential when no page load uses it in time.
+        tab.pw_timer = GLib.timeout_add_seconds(
+            vault.PENDING_SECONDS, self._expire_pending, tab)
         self._log_event("pending")
+
+    def _drop_pending(self, tab):
+        """Forget the pending credential of TAB and cancel its timer."""
+        timer = getattr(tab, "pw_timer", 0)
+        if timer:
+            GLib.source_remove(timer)
+        tab.pw_timer = 0
+        tab.pw_pending = None
+
+    def _expire_pending(self, tab):
+        tab.pw_timer = 0
+        tab.pw_pending = None
+        return False
 
     # load events
     def page_started(self, tab):
@@ -122,7 +143,7 @@ class Passwords:
         if pending is None:
             return
         # Use the pending credential once, at the first finished load.
-        tab.pw_pending = None
+        self._drop_pending(tab)
         if tab.private or tab.peek or tab.view is None or not self.offers_on():
             return
         if not vault.pending_valid(pending, time.monotonic()):
@@ -147,7 +168,7 @@ class Passwords:
         view.run_javascript_in_world(VISIBLE_JS, WORLD, None, answered, None)
 
     def tab_gone(self, tab):
-        tab.pw_pending = None
+        self._drop_pending(tab)
         self.hide_fill()
         for bar in list(self.win.bars.get_children()):
             if bar.tab is tab and getattr(bar, "key", "") == "password":
@@ -177,6 +198,8 @@ class Passwords:
                 old.destroy()
         host = vault.origin_host(origin)
         shown = username if username else "this account"
+        held = [password]
+        password = None
         bar = Gtk.InfoBar()
         bar.tab = tab
         bar.key = "password"
@@ -195,15 +218,33 @@ class Passwords:
             if bar.answered:
                 return
             bar.answered = True
+            # Take the password first: closing the bar drops it.
+            secret = held[0]
             bar.destroy()
-            if answer == Gtk.ResponseType.YES:
-                self.backend.put(origin, username, password, self._saved)
+            if answer == Gtk.ResponseType.YES and secret is not None:
+                self.backend.put(origin, username, secret, self._saved)
             elif answer == Gtk.ResponseType.NO:
                 try:
                     win.store.add_password_never(origin)
                 except OSError as exc:
                     log.warning("never list save failed: %s", exc)
 
+        timer = [0]
+
+        def expire():
+            timer[0] = 0
+            held[0] = None
+            return False
+
+        # Keep no password for long: drop it when the bar closes or at 120 s.
+        timer[0] = GLib.timeout_add_seconds(BAR_SECONDS, expire)
+
+        def closed(_bar):
+            if timer[0]:
+                GLib.source_remove(timer[0])
+            expire()
+
+        bar.connect("destroy", closed)
         bar.connect("response", response)
         win.bars.pack_start(bar, False, False, 0)
         bar.show_all()
@@ -324,6 +365,7 @@ class Passwords:
             clipboard = Gtk.Clipboard.get_default(Gdk.Display.get_default())
             clipboard.set_text(password, -1)
             copied = digest(password)
+            self._copied = copied
             if self._copy_src:
                 GLib.source_remove(self._copy_src)
             self._copy_src = GLib.timeout_add_seconds(
@@ -333,6 +375,7 @@ class Passwords:
 
     def _clear_clipboard(self, copied):
         self._copy_src = 0
+        self._copied = None
         clipboard = Gtk.Clipboard.get_default(Gdk.Display.get_default())
 
         def seen(_clipboard, text):
@@ -342,6 +385,22 @@ class Passwords:
 
         clipboard.request_text(seen)
         return False
+
+
+    def shutdown(self):
+        """Clear the clipboard now if it still holds the copied password."""
+        copied, self._copied = self._copied, None
+        if self._copy_src:
+            GLib.source_remove(self._copy_src)
+            self._copy_src = 0
+        if copied is None:
+            return
+        clipboard = Gtk.Clipboard.get_default(Gdk.Display.get_default())
+        text = clipboard.wait_for_text()
+        now = digest(text) if text is not None else None
+        if vault.clipboard_should_clear(now, copied):
+            clipboard.clear()
+            clipboard.store()
 
 
 class PasswordsWindow(Gtk.Window):

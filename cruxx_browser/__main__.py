@@ -50,8 +50,8 @@ def main(argv=None):
         level=logging.DEBUG if opts.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s")
     from .app import CruxxApp
-    app = CruxxApp(parse_args, unique=opts.test_url is None
-                   and opts.test_action not in ("pwsave", "pwfill"))
+    # A test run never joins a running instance.
+    app = CruxxApp(parse_args, unique=not (opts.test_url or opts.test_action))
     status = app.run(["cruxx-browser"] + argv)
     return app.exit_code or status
 

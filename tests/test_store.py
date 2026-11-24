@@ -162,6 +162,24 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(store.Store().bookmarks, [])
 
 
+class ReadOnlyTest(StoreTest):
+    def test_read_only_refuses_writes(self):
+        data = store.Store(read_only=True)
+        data.save_settings()
+        data.save_session([], 0, False)
+        data.history.append({"url": "https://example.com/", "title": "E", "time": 1})
+        data.history_dirty = True
+        data.flush()
+        for name in os.listdir(data.dir) + os.listdir(data.cfg):
+            self.assertNotIn(name, ("settings.json", "session.json", "history.json"))
+
+    def test_normal_store_writes(self):
+        data = store.Store()
+        data.save_settings()
+        self.assertTrue(os.path.exists(os.path.join(data.cfg, "settings.json"))
+                        or os.path.exists(os.path.join(data.dir, "settings.json")))
+
+
 class StoreHardeningTest(StoreTest):
     def _write(self, directory, name, text):
         os.makedirs(directory, exist_ok=True)

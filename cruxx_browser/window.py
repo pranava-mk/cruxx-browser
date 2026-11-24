@@ -338,6 +338,7 @@ class Window(Gtk.ApplicationWindow):
         self.overlay.add(self.stack)
         # The wall lies over a blank tab. A click goes through to the page.
         self.wall = WallView()
+        self.wall.on_kind_change = self._sync_wall
         self.toast_label = Gtk.Label()
         self.toast_label.get_style_context().add_class("cruxx-status")
         self.toast_label.set_halign(Gtk.Align.CENTER)
@@ -605,6 +606,9 @@ class Window(Gtk.ApplicationWindow):
                     done(False)
                 return
             mine = [r for r in records if store.data_matches(r.get_name(), host)]
+            # WebKit can name a record by the registrable domain. Delete the
+            # cookies of this exact host in a separate step.
+            self._clear_host_cookies(host)
             if not mine:
                 if done:
                     done(True)
@@ -612,6 +616,25 @@ class Window(Gtk.ApplicationWindow):
             manager.remove(types, mine, None, removed)
 
         manager.fetch(types, None, fetched)
+
+    def _clear_host_cookies(self, host):
+        """Delete the cookies of HOST only. Keep parent domain cookies."""
+        manager = self.persistent_ctx.get_website_data_manager()
+        cookies = manager.get_cookie_manager()
+
+        def got(_m, result, uri):
+            try:
+                found = cookies.get_cookies_finish(result)
+            except GLib.Error as exc:
+                log.warning("read cookies failed: %s", exc.message)
+                return
+            for cookie in found:
+                if store.data_matches(cookie.get_domain(), host):
+                    cookies.delete_cookie(cookie, None, lambda *_a: None)
+
+        for scheme in ("https", "http"):
+            uri = "%s://%s/" % (scheme, host)
+            cookies.get_cookies(uri, None, got, uri)
 
     # zoom. The level is saved for each host.
     def apply_zoom(self, tab):
@@ -1124,7 +1147,9 @@ class Window(Gtk.ApplicationWindow):
 
     def add_peek_view(self, tab):
         tab.view.show()
-        tab.view.connect("close", lambda *_: self.close_peek())
+        # Keep the handler id: adopt_peek disconnects it.
+        tab.peek_close_id = tab.view.connect(
+            "close", lambda *_: self.peek is tab and self.close_peek())
         self.peek_body.pack_start(tab.view, True, True, 0)
 
     def close_peek(self, refocus=True):
@@ -1146,6 +1171,10 @@ class Window(Gtk.ApplicationWindow):
         self.peek = None
         self.peek_layer.hide()
         tab.peek = False
+        handler = getattr(tab, "peek_close_id", 0)
+        if handler:
+            tab.view.disconnect(handler)
+            tab.peek_close_id = 0
         tab.stored_url = tab.view.get_uri() or tab.stored_url
         tab.view.connect("focus-in-event", self._on_view_focus, tab)
         self.tabs.append(tab)

@@ -71,7 +71,11 @@ class CruxxApp(Gtk.Application):
             self.pw_server, self.pw_port = pwtest.start_server()
             opts.test_url = "http://127.0.0.1:%d/login.html" % self.pw_port
             opts.test_vault = "memory"
-        self.store = store.Store()
+        elif opts.test_action and not opts.test_url:
+            # A test action runs after a page load. Use a blank page.
+            opts.test_url = "about:blank"
+        test_run = bool(opts.test_url or opts.test_action)
+        self.store = store.Store(read_only=test_run)
         self.shield = Shield(store.cache_dir())
         self.shield.compile()
         self.window = Window(self, opts, self.store)
@@ -182,6 +186,8 @@ class CruxxApp(Gtk.Application):
 
     def do_shutdown(self):
         if self.window is not None:
+            self.window.passwords.shutdown()
+            # The store refuses these writes in a test run.
             self.window.save_session()
             try:
                 self.store.flush()

@@ -72,9 +72,31 @@
     post({ kind: "focus", rect: { x: box.left, y: box.top, w: box.width, h: box.height } });
   }
 
+  // A focus shows the list only after a trusted user action in the last second.
+  // A page script can call focus() with no user action: it shows nothing.
+  var GESTURE_MS = 1000;
+  var gestureTime = 0;
+  var gestureTarget = null;   // null: a key press, any field can get the focus
+
+  function gesture(event) {
+    if (!event.isTrusted) return;
+    gestureTime = Date.now();
+    gestureTarget = event.type === "keydown" ? null : event.target;
+  }
+  ["pointerdown", "mousedown", "touchstart", "keydown"].forEach(function (name) {
+    document.addEventListener(name, gesture, true);
+  });
+
+  function gestureFor(el) {
+    if (Date.now() - gestureTime > GESTURE_MS) return false;
+    return gestureTarget === null || gestureTarget === el ||
+      (gestureTarget.contains && gestureTarget.contains(el)) ||
+      (el.labels && Array.prototype.indexOf.call(el.labels, gestureTarget) >= 0);
+  }
+
   document.addEventListener("focusin", function (event) {
     clearTimeout(hideTimer);
-    announce(event.target);
+    if (gestureFor(event.target)) announce(event.target);
   }, true);
   document.addEventListener("click", function (event) {
     if (!event.isTrusted) return;

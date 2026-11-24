@@ -43,8 +43,8 @@ class SmokeTest(unittest.TestCase):
                 cwd=ROOT, env=env, timeout=30, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             session = os.path.join(tmp, "data", "cruxx-browser", "session.json")
-            self.assertTrue(os.path.exists(session))
-            self.assertEqual(stat.S_IMODE(os.stat(session).st_mode), 0o600)
+            # A test run uses a read only store: it writes no session.
+            self.assertFalse(os.path.exists(session))
 
 
 if __name__ == "__main__":

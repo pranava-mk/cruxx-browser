@@ -4,7 +4,8 @@ from cruxx_browser import spaces
 
 
 class T:
-    def __init__(self, pinned=False, private=False):
+    def __init__(self, pinned=False, private=False, floating=False):
+        self.floating = floating
         self.pinned = pinned
         self.private = private
 
@@ -84,6 +85,9 @@ class OpsTest(unittest.TestCase):
         self.assertIs(spaces.choose_partner(tabs, a, []), c)
         self.assertIsNone(spaces.choose_partner(tabs, a, [spaces.Split(c, T())]))
         self.assertIsNone(spaces.choose_partner([a], a, []))
+        fl = T(floating=True)
+        self.assertIs(spaces.choose_partner([a, fl, c], a, []), c)
+        self.assertIsNone(spaces.choose_partner([a, fl], a, []))
 
     def test_visible(self):
         space = spaces.Space()

@@ -216,5 +216,20 @@ class ArgsTest(unittest.TestCase):
             parse_args(["--nope"])
 
 
+class HugeInputTest(unittest.TestCase):
+    def test_huge_title_is_fast(self):
+        import time
+        title = "lorem ipsum " * 90000
+        start = time.monotonic()
+        omnibox.fuzzy_score("zzzqqq lorem", title)
+        omnibox.fuzzy_score("loerm ipsmu dolr", title)
+        omnibox.switch_rank("lorem ipsum dolor sit amet x y z w", [(title, title)])
+        self.assertLess(time.monotonic() - start, 0.05)
+
+    def test_limits_keep_match(self):
+        self.assertEqual(omnibox.fuzzy_score("apple", "apple " + "x" * 5000), 3)
+        self.assertIsNone(omnibox.fuzzy_score("late", "x" * 400 + " late"))
+
+
 if __name__ == "__main__":
     unittest.main()

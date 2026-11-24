@@ -201,6 +201,13 @@ def _distance(a, b):
     return rows[-1][-1]
 
 
+# Limits keep the match time small for a very long title or input.
+HAYSTACK_MAX = 300
+NEEDLE_WORD_MAX = 32
+NEEDLE_WORDS_MAX = 8
+NEEDLE_CHARS_MAX = 600
+
+
 def _nearly(word, text_words):
     """Return True if WORD is a typo of the start of a word in TEXT_WORDS.
 
@@ -239,10 +246,11 @@ def fuzzy_score(needle, text):
     2 if it is inside TEXT, 1 for an abbreviation or one forgiven typo.
     The result is the sum. A larger score is a better match.
     """
-    words = needle.lower().split()
+    words = [w[:NEEDLE_WORD_MAX] for w in needle[:NEEDLE_CHARS_MAX].lower().split()]
+    words = words[:NEEDLE_WORDS_MAX]
     if not words:
         return 0
-    low = text.lower()
+    low = text[:HAYSTACK_MAX].lower()
     text_words = _word_starts(low)
     total = 0
     for word in words:

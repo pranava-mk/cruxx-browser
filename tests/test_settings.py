@@ -38,7 +38,11 @@ class OptionTest(unittest.TestCase):
     def test_data_matches(self):
         self.assertTrue(store.data_matches(".example.com", "www.example.com"))
         self.assertTrue(store.data_matches("example.com", "example.com"))
-        self.assertTrue(store.data_matches("cdn.example.com", "example.com"))
+        self.assertFalse(store.data_matches("cdn.example.com", "example.com"))
+        self.assertFalse(store.data_matches("example.com", "a.example.com"))
+        self.assertFalse(store.data_matches(".example.com", "a.example.com"))
+        self.assertTrue(store.data_matches(".a.example.com", "a.example.com"))
+        self.assertTrue(store.data_matches("www.example.com", "EXAMPLE.com"))
         self.assertFalse(store.data_matches("badexample.com", "example.com"))
         self.assertFalse(store.data_matches("", "example.com"))
 

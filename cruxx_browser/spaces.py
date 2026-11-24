@@ -200,7 +200,8 @@ def choose_partner(tabs, tab, splits):
     start = tabs.index(tab)
     for offset in range(1, len(tabs)):
         other = tabs[(start + offset) % len(tabs)]
-        if not other.pinned and find_split(splits, other) is None:
+        if (not other.pinned and not getattr(other, "floating", False)
+                and find_split(splits, other) is None):
             return other
     return None
 

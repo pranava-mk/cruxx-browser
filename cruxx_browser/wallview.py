@@ -6,6 +6,7 @@ pixbuf. A hidden widget keeps no pixbuf.
 """
 
 import logging
+import threading
 
 import cairo
 import gi
@@ -18,7 +19,7 @@ from . import wall  # noqa: E402
 
 log = logging.getLogger(__name__)
 SOURCE_MAX = 3840
-PIXELS_MAX = 100_000_000
+PIXELS_MAX = 40_000_000
 RESIZE_DELAY_MS = 120
 
 
@@ -36,6 +37,8 @@ class WallView(Gtk.DrawingArea):
         self._source = None
         self._cached = None
         self._timer = 0
+        self._job = 0            # a new job number makes older results stale
+        self.on_kind_change = None
         self.connect("draw", self._on_draw)
         self.connect("size-allocate", self._on_size)
         self._path = ""
@@ -53,12 +56,13 @@ class WallView(Gtk.DrawingArea):
         kind = spec["kind"]
         if kind in ("omarchy", "picture"):
             self._path = omarchy_path if kind == "omarchy" else spec["picture"]
-            self._source = self._load(self._path)
-            if self._source is None:
+            if wall.check_picture(self._path) is None:
+                log.warning("wall picture refused: not a regular file of allowed size")
                 kind = "off"
-            elif not self.get_mapped():
-                # A hidden widget keeps no pixbuf. The next map loads it again.
-                self._source = None
+            elif self.get_mapped():
+                # Show the plain background until the picture is ready.
+                self._load_async(self._path)
+            # A hidden widget keeps no pixbuf. The next map loads it.
         self.kind = kind
         self.queue_draw()
         return kind
@@ -70,12 +74,37 @@ class WallView(Gtk.DrawingArea):
             self._timer = 0
         self._cached = None
         self._source = None
+        self._job += 1
 
     def _on_map(self, _w):
         if self.kind in ("omarchy", "picture") and self._source is None:
-            self._source = self._load(self._path)
-            if self._source is None:
-                self.kind = "off"
+            self._load_async(self._path)
+
+    def _load_async(self, path):
+        """Load PATH in a thread. Hand the result to the main loop."""
+        self._job += 1
+        job = self._job
+
+        def work():
+            # Only GdkPixbuf runs here. No GTK call is safe in this thread.
+            pixbuf = self._load(path)
+            GLib.idle_add(self._loaded, job, pixbuf)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _loaded(self, job, pixbuf):
+        """Take a loaded picture on the main loop. Ignore a stale result."""
+        if job != self._job:
+            return False
+        if pixbuf is None:
+            self.kind = "off"
+            if self.on_kind_change:
+                self.on_kind_change()
+        else:
+            self._source = pixbuf
+            self._cached = None
+        self.queue_draw()
+        return False
 
     @staticmethod
     def _load(path):
@@ -108,6 +137,8 @@ class WallView(Gtk.DrawingArea):
 
     def _on_size(self, _w, alloc):
         if self.kind not in ("omarchy", "picture"):
+            return
+        if self._source is None:
             return
         if self._cached is None:
             self._rescale(alloc.width, alloc.height)

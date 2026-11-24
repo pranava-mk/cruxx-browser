@@ -104,7 +104,8 @@ class SiteCard(_Pop):
         clear = button("Clear cookies for this site", self._clear_cookies)
         clear.set_sensitive(not tab.private)
         body.pack_start(row("Cookies and site data", clear,
-                            "Private tab: nothing is saved." if tab.private else None),
+                            "Private tab: nothing is saved." if tab.private
+                            else "Only this exact host. Parent domain cookies stay."),
                         False, False, 4)
         body.pack_start(label("Blocked popups: %d" % tab.blocked_popups, "cruxx-note"),
                         False, False, 4)

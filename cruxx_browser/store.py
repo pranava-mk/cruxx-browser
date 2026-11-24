@@ -92,18 +92,26 @@ def check_option(key, value):
     raise ValueError("bad value for setting %r" % (key,))
 
 
+def _site_key(name):
+    """Return NAME in lower case, without dots at the ends or a "www."."""
+    name = (name or "").lower().strip(".")
+    if name.startswith("www.") and len(name) > 4:
+        name = name[4:]
+    return name
+
+
 def data_matches(record, host):
     """Return True if the website data record name RECORD belongs to HOST.
 
     A record can be a cookie domain (".example.com") or a host name. It
-    matches when it is HOST or a parent domain of HOST, or a sub domain of HOST.
+    matches only when it is HOST or "." and HOST. A parent domain or a sub
+    domain of HOST does not match. Both names lose a leading "www.".
     """
-    record = (record or "").lower().strip(".")
-    host = (host or "").lower().strip(".")
+    record = _site_key(record)
+    host = _site_key(host)
     if not record or not host:
         return False
-    return (record == host or host.endswith("." + record)
-            or record.endswith("." + host))
+    return record == host
 
 
 def _xdg(var, fallback):
@@ -227,7 +235,9 @@ _TAB_SHAPE = {"url": str, "title": str, "pinned": bool, "custom_title": str}
 class Store:
     """All persistent data. Load once, flush when dirty."""
 
-    def __init__(self):
+    def __init__(self, read_only=False):
+        # A read only store refuses every write with no error. Test runs use it.
+        self.read_only = read_only
         self.dir = data_dir()
         self.cfg = config_dir()
         make_private_dir(self.dir)
@@ -284,8 +294,14 @@ class Store:
                         if isinstance(k, str) and isinstance(v, bool)}
         return out
 
+    def _write(self, path, obj):
+        """Write OBJ to PATH as JSON. Do nothing in a read only store."""
+        if self.read_only:
+            return
+        write_json_atomic(path, obj)
+
     def save_settings(self):
-        write_json_atomic(self._p("settings.json"), self.settings)
+        self._write(self._p("settings.json"), self.settings)
 
     def set_option(self, key, value):
         """Check and save one setting. Undo the change if the write fails."""
@@ -428,7 +444,7 @@ class Store:
     def flush(self):
         """Write history if it changed."""
         if self.history_dirty:
-            write_json_atomic(self._p("history.json"), self.history)
+            self._write(self._p("history.json"), self.history)
             self.history_dirty = False
 
     # bookmarks
@@ -439,7 +455,7 @@ class Store:
             return False
         self.bookmarks.append({"url": url, "title": title or ""})
         try:
-            write_json_atomic(self._p("bookmarks.json"), self.bookmarks)
+            self._write(self._p("bookmarks.json"), self.bookmarks)
         except OSError:
             self.bookmarks.pop()
             raise
@@ -447,7 +463,7 @@ class Store:
 
     def remove_bookmark(self, url):
         self.bookmarks = [b for b in self.bookmarks if b["url"] != url]
-        write_json_atomic(self._p("bookmarks.json"), self.bookmarks)
+        self._write(self._p("bookmarks.json"), self.bookmarks)
 
     # session
     def load_session(self):
@@ -480,7 +496,7 @@ class Store:
         if space_rows is None:
             space_rows = [{"name": spaces.DEFAULT_NAME, "icon": "H", "tabs": tabs,
                            "active": active, "splits": []}]
-        write_json_atomic(self._p("session.json"),
+        self._write(self._p("session.json"),
                           {"version": spaces.SESSION_VERSION, "side": side,
                            "current": current, "spaces": space_rows})
 
@@ -509,7 +525,7 @@ class Store:
         # Write a changed copy first. Change memory only if the write works.
         updated = dict(self.hidden)
         updated[site] = sels + [selector]
-        write_json_atomic(self._p("hidden.json"), updated)
+        self._write(self._p("hidden.json"), updated)
         self.hidden = updated
         return True
 
@@ -517,7 +533,7 @@ class Store:
         site = registrable_host(host)
         if site in self.hidden:
             updated = {k: v for k, v in self.hidden.items() if k != site}
-            write_json_atomic(self._p("hidden.json"), updated)
+            self._write(self._p("hidden.json"), updated)
             self.hidden = updated
 
     def remove_hidden(self, host, selector):
@@ -532,9 +548,9 @@ class Store:
             updated[site] = rest
         else:
             del updated[site]
-        write_json_atomic(self._p("hidden.json"), updated)
+        self._write(self._p("hidden.json"), updated)
         self.hidden = updated
 
     def clear_all_hidden(self):
-        write_json_atomic(self._p("hidden.json"), {})
+        self._write(self._p("hidden.json"), {})
         self.hidden = {}
