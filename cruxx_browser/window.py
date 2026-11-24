@@ -11,8 +11,8 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
-from . import (cleanlink, memory, omnibox, reorder, security, sleep, spaces,  # noqa: E402
-               store, theme)
+from . import (cleanlink, memory, omnibox, reorder, security, shortcuts, sleep,  # noqa: E402
+               spaces, store, theme)
 from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
                          SwitcherPrompt)
 from .sidebar import TabStrip, drop_targets  # noqa: E402
@@ -262,6 +262,8 @@ class Window(Gtk.ApplicationWindow):
         self.private_grants = {}
         self.dragging = None
         self.private_awake = set()
+        self.private_zoom = {}
+        self._settings_win = None
         self.sleep_override_min = None
         self._external_open = False
         self.colors = theme.load()
@@ -371,6 +373,8 @@ class Window(Gtk.ApplicationWindow):
 
     def _build_menu(self):
         menu = Gtk.Menu()
+        settings_item = Gtk.MenuItem(label="Settings\u2026")
+        settings_item.connect("activate", lambda *_: self.open_settings())
         self.pause_item = Gtk.CheckMenuItem(label="Pause shield on this site")
         self.pause_item.connect("toggled", self._on_pause_toggled)
         self.popup_item = Gtk.MenuItem(label="Blocked popups: 0")
@@ -379,17 +383,13 @@ class Window(Gtk.ApplicationWindow):
         reader.connect("activate", lambda *_: self.toggle_reader())
         hide = Gtk.MenuItem(label="Hide element")
         hide.connect("activate", lambda *_: self.start_hide())
-        unhide = Gtk.MenuItem(label="Show hidden elements on this site")
-        unhide.connect("activate", lambda *_: self.unhide_site())
+        unhide = Gtk.MenuItem(label="Hidden elements on this site\u2026")
+        unhide.connect("activate", lambda *_: self.open_hidden_list())
         origin = Gtk.MenuItem(label="Reload from origin (Ctrl+Alt+R)")
         origin.connect("activate", lambda *_: self._reload_origin())
         self.awake_item = Gtk.CheckMenuItem(label="Keep This Site Awake")
         self.awake_item.set_no_show_all(True)
         self.awake_item.connect("toggled", self._on_awake_toggled)
-        self.awake_enable_item = Gtk.CheckMenuItem(label="Offer keep-awake for sites")
-        self.awake_enable_item.connect("toggled", self._on_awake_enable_toggled)
-        self.split_enable_item = Gtk.CheckMenuItem(label="Split View")
-        self.split_enable_item.connect("toggled", self._on_split_enable_toggled)
         self.split_item = Gtk.MenuItem(label="Split current page (Ctrl+Alt+N)")
         self.split_item.set_no_show_all(True)
         self.split_item.connect("activate", lambda *_: self.split_current())
@@ -398,8 +398,8 @@ class Window(Gtk.ApplicationWindow):
         self.unsplit_item.connect("activate", lambda *_: self.unsplit_active())
         space_item = Gtk.MenuItem(label="New space")
         space_item.connect("activate", lambda *_: self.new_space())
-        for item in (self.pause_item, reader, hide, unhide, origin, self.awake_item,
-                     self.awake_enable_item, self.split_enable_item, self.split_item,
+        for item in (settings_item, Gtk.SeparatorMenuItem(), self.pause_item, reader,
+                     hide, unhide, origin, self.awake_item, self.split_item,
                      self.unsplit_item, space_item, self.popup_item):
             menu.append(item)
         menu.show_all()
@@ -415,12 +415,10 @@ class Window(Gtk.ApplicationWindow):
             or (tab.private and store.registrable_host(tab.host) in self.private_paused)))
         self.pause_item.set_active(paused)
         enabled = self.store.settings["keep_awake_enabled"]
-        self.awake_enable_item.set_active(enabled)
         self.awake_item.set_visible(enabled)
         self.awake_item.set_sensitive(bool(tab and tab.host))
         self.awake_item.set_active(bool(tab and self.is_kept_awake(tab)))
         split_on = self.split_on()
-        self.split_enable_item.set_active(split_on)
         self.split_item.set_visible(split_on)
         self.unsplit_item.set_visible(split_on)
         self.unsplit_item.set_sensitive(bool(tab and self.split_of(tab)))
@@ -431,20 +429,184 @@ class Window(Gtk.ApplicationWindow):
         tab = self.active
         if self._menu_updating or tab is None or not tab.host:
             return
+        self.set_site_shield(tab, item.get_active())
+
+    def site_paused(self, tab):
+        """Return True if the shield is paused for the site of TAB."""
+        return bool(tab and tab.host and (
+            self.store.shield_paused(tab.host)
+            or (tab.private and store.registrable_host(tab.host) in self.private_paused)))
+
+    def set_site_shield(self, tab, paused, reload=True):
+        if tab is None or not tab.host:
+            return
         if tab.private:
             # A private tab must not write to settings.json.
             site = store.registrable_host(tab.host)
-            if item.get_active():
+            if paused:
                 self.private_paused.add(site)
             else:
                 self.private_paused.discard(site)
         else:
             try:
-                self.store.set_shield_paused(tab.host, item.get_active())
+                self.store.set_shield_paused(tab.host, paused)
             except OSError as exc:
                 log.warning("shield pause save failed: %s", exc)
         tab.tune_shield(tab.host)
-        tab.view.reload()
+        if reload and tab.view is not None:
+            tab.view.reload()
+
+    # settings that the settings window changes. They apply at once.
+    def set_option(self, key, value):
+        """Save one setting and apply it. Return False if it was not saved."""
+        try:
+            self.store.set_option(key, value)
+        except (ValueError, OSError) as exc:
+            log.warning("setting not saved: %s", exc)
+            return False
+        if key == "shield_enabled":
+            for tab in self.all_tabs():
+                if tab.view is not None:
+                    tab.tune_shield(tab.host)
+            if self.active is not None and self.active.view is not None:
+                self.active.view.reload()
+        elif key == "split_enabled":
+            if not value:
+                for space in self.spaces:
+                    for split in list(space.splits):
+                        self._drop_split(split)
+                if self.active is not None:
+                    self._show(self.active)
+                self.refresh()
+                self.schedule_save()
+        elif key == "keep_awake_enabled":
+            self.refresh()
+        return True
+
+    def set_side(self, side):
+        if side in ("left", "top") and side != self.side:
+            self.side = side
+            self._layout()
+            self.schedule_save()
+
+    # settings window, site card, hidden list
+    def open_settings(self, section=None):
+        from .settingswin import SettingsWindow
+        if getattr(self, "_settings_win", None) is None:
+            self._settings_win = SettingsWindow(self)
+            self._settings_win.connect(
+                "destroy", lambda *_: setattr(self, "_settings_win", None))
+        self._settings_win.show_section(section)
+
+    def _popover_anchor(self, tab):
+        widget = self.strip.items.get(tab)
+        if widget is None or not widget.get_mapped():
+            widget = self.overlay
+        return widget
+
+    def open_site_card(self, tab=None):
+        from .sitecard import SiteCard
+        tab = tab or self.active
+        if tab is None or not tab.url:
+            return
+        SiteCard(self, tab, self._popover_anchor(tab)).popup()
+
+    def open_hidden_list(self, tab=None):
+        from .sitecard import HiddenList
+        tab = tab or self.active
+        if tab is None or not tab.host:
+            return
+        HiddenList(self, tab, self._popover_anchor(tab)).popup()
+
+    def reapply_hidden(self, tab):
+        """Rebuild the hidden-element scripts. Reload the tab to show the change."""
+        for other in self.all_tabs():
+            other.update_hidden_script()
+        if tab.view is not None:
+            tab.view.reload()
+
+    # website data (cookies, storage, caches)
+    def _all_types(self):
+        types = 0
+        for name in dir(WebKit2.WebsiteDataTypes):
+            if name.isupper() and isinstance(getattr(WebKit2.WebsiteDataTypes, name), int):
+                types |= int(getattr(WebKit2.WebsiteDataTypes, name))
+        return WebKit2.WebsiteDataTypes(types)
+
+    def clear_website_data(self, done=None):
+        """Remove all website data of the normal profile."""
+        manager = self.persistent_ctx.get_website_data_manager()
+
+        def finished(_m, result):
+            try:
+                manager.clear_finish(result)
+                ok = True
+            except GLib.Error as exc:
+                log.warning("clear data failed: %s", exc.message)
+                ok = False
+            if done:
+                done(ok)
+
+        manager.clear(self._all_types(), 0, None, finished)
+
+    def clear_site_data(self, host, done=None):
+        """Remove the website data records of HOST only."""
+        manager = self.persistent_ctx.get_website_data_manager()
+        types = self._all_types()
+
+        def removed(_m, result):
+            try:
+                manager.remove_finish(result)
+                ok = True
+            except GLib.Error as exc:
+                log.warning("remove data failed: %s", exc.message)
+                ok = False
+            if done:
+                done(ok)
+
+        def fetched(_m, result):
+            try:
+                records = manager.fetch_finish(result)
+            except GLib.Error as exc:
+                log.warning("fetch data failed: %s", exc.message)
+                if done:
+                    done(False)
+                return
+            mine = [r for r in records if store.data_matches(r.get_name(), host)]
+            if not mine:
+                if done:
+                    done(True)
+                return
+            manager.remove(types, mine, None, removed)
+
+        manager.fetch(types, None, fetched)
+
+    # zoom. The level is saved for each host.
+    def apply_zoom(self, tab):
+        if tab.view is None or not tab.host:
+            return
+        tab.view.set_zoom_level(self.zoom_level_for(tab))
+
+    def zoom_level_for(self, tab):
+        site = store.registrable_host(tab.host)
+        if tab.private:
+            return self.private_zoom.get(site, self.store.zoom_for(tab.host))
+        return self.store.zoom_for(tab.host)
+
+    def set_zoom_level(self, tab, level):
+        level = store.clean_zoom(level)
+        if tab.view is None or level is None:
+            return
+        tab.view.set_zoom_level(level)
+        if not tab.host:
+            return
+        if tab.private:
+            self.private_zoom[store.registrable_host(tab.host)] = level
+            return
+        try:
+            self.store.set_zoom(tab.host, level)
+        except OSError as exc:
+            log.warning("zoom save failed: %s", exc)
 
     def _build_find_bar(self):
         bar = Gtk.Box(spacing=6)
@@ -679,23 +841,6 @@ class Window(Gtk.ApplicationWindow):
             target = split.a if delta < 0 else split.b
             if target is not self.active:
                 self.select_tab(target)
-
-    def _on_split_enable_toggled(self, item):
-        if self._menu_updating:
-            return
-        self.store.settings["split_enabled"] = item.get_active()
-        try:
-            self.store.save_settings()
-        except OSError as exc:
-            log.warning("settings save failed: %s", exc)
-        if not item.get_active():
-            for space in self.spaces:
-                for split in list(space.splits):
-                    self._drop_split(split)
-            if self.active is not None:
-                self._show(self.active)
-            self.refresh()
-            self.schedule_save()
 
     def _on_zone_motion(self, _zone, ctx, _x, _y, stamp):
         if self.dragging is None:
@@ -1174,8 +1319,8 @@ class Window(Gtk.ApplicationWindow):
     def zoom(self, step):
         if self.active and self.active.view:
             view = self.active.view
-            level = 1.0 if step == 0 else min(5.0, max(0.3, view.get_zoom_level() + step))
-            view.set_zoom_level(level)
+            level = 1.0 if step == 0 else view.get_zoom_level() + step
+            self.set_zoom_level(self.active, level)
 
     # clipboard
     def copy_url(self):
@@ -1425,7 +1570,8 @@ class Window(Gtk.ApplicationWindow):
         restored = []
         for entry in session["spaces"]:
             space = spaces.Space(entry["name"], entry["icon"])
-            for row in entry["tabs"]:
+            rows = entry["tabs"] if self.store.settings["restore_session"] else []
+            for row in rows:
                 tab = Tab(self, row["url"], row["title"], row["pinned"])
                 tab.custom_title = row["custom_title"]
                 space.tabs.append(tab)
@@ -1433,7 +1579,7 @@ class Window(Gtk.ApplicationWindow):
             if space.tabs:
                 space.last_normal = min(entry["active"], len(space.tabs) - 1)
                 space.active = space.tabs[space.last_normal]
-            if self.split_on():
+            if self.split_on() and rows:
                 for item in entry["splits"]:
                     space.splits.append(spaces.Split(
                         space.tabs[item["a"]], space.tabs[item["b"]], item["ratio"]))
@@ -1496,21 +1642,9 @@ class Window(Gtk.ApplicationWindow):
             return self._do(lambda: self.cycle(-1 if shift or name == "ISO_Left_Tab" else 1))
         if len(name) == 1 and name in "123456789" and not shift:
             return self._do(lambda: self.jump(int(name)))
-        table = self._shift_keys if shift else self._plain_keys
+        table = shortcuts.SHIFT if shift else shortcuts.PLAIN
         action = table.get(name)
         return self._do(getattr(self, action)) if action else False
-
-    _plain_keys = {
-        "t": "open_tab", "w": "_close_active", "l": "focus_omnibox", "k": "open_switcher",
-        "r": "_reload", "f": "open_find", "d": "duplicate", "b": "_toggle_bookmarks",
-        "y": "_toggle_history", "s": "toggle_strip", "bracketleft": "_back",
-        "bracketright": "_forward",
-    }
-    _shift_keys = {
-        "t": "reopen_closed", "s": "toggle_side", "d": "toggle_pin", "c": "copy_url",
-        "v": "paste_and_go", "b": "bookmark", "j": "_toggle_downloads",
-        "n": "_open_private", "h": "start_hide", "u": "unhide_site", "r": "toggle_reader",
-    }
 
     @staticmethod
     def _do(func):
@@ -1568,15 +1702,6 @@ class Window(Gtk.ApplicationWindow):
     def _on_awake_toggled(self, item):
         if not self._menu_updating and self.active is not None:
             self.set_kept_awake(self.active, item.get_active())
-
-    def _on_awake_enable_toggled(self, item):
-        if self._menu_updating:
-            return
-        self.store.settings["keep_awake_enabled"] = item.get_active()
-        try:
-            self.store.save_settings()
-        except OSError as exc:
-            log.warning("settings save failed: %s", exc)
 
     def _download_pending(self, tab):
         for item in self.downloads:

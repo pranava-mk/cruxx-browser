@@ -173,6 +173,8 @@ class Tab:
             self.reader = False
             self.blocked_popups = 0
             self.win.clear_permission_bars(self)
+        if event == WebKit2.LoadEvent.COMMITTED:
+            self.win.apply_zoom(self)
         self.win.load_changed(self, event)
 
     def _on_load_failed(self, _view, _event, _uri, _error):

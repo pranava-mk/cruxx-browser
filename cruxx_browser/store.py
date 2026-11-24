@@ -30,7 +30,54 @@ DEFAULT_SETTINGS = {
     "keep_awake_enabled": False,
     "keep_awake_hosts": [],
     "split_enabled": False,
+    "restore_session": True,
+    "zoom_by_host": {},
 }
+# Search engines that the omnibox knows. A test keeps this in step.
+ENGINES = ("duckduckgo", "google", "brave", "startpage", "kagi")
+SLEEP_CHOICES = (0, 15, 30, 60, 120)
+BOOL_OPTIONS = ("shield_enabled", "restore_session", "sleep_pinned",
+                "keep_awake_enabled", "split_enabled")
+ZOOM_MIN = 0.3
+ZOOM_MAX = 5.0
+
+
+def clean_zoom(value):
+    """Return VALUE as a zoom level (rounded, in range), or None if not valid."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return round(min(ZOOM_MAX, max(ZOOM_MIN, float(value))), 2)
+
+
+def check_option(key, value):
+    """Return the clean VALUE for the setting KEY. Raise ValueError if bad."""
+    if key == "engine":
+        if value in ENGINES:
+            return value
+    elif key in BOOL_OPTIONS:
+        if isinstance(value, bool):
+            return value
+    elif key == "sleep_after_min":
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and value in SLEEP_CHOICES):
+            return int(value)
+    raise ValueError("bad value for setting %r" % (key,))
+
+
+def data_matches(record, host):
+    """Return True if the website data record name RECORD belongs to HOST.
+
+    A record can be a cookie domain (".example.com") or a host name. It
+    matches when it is HOST or a parent domain of HOST, or a sub domain of HOST.
+    """
+    record = (record or "").lower().strip(".")
+    host = (host or "").lower().strip(".")
+    if not record or not host:
+        return False
+    return (record == host or host.endswith("." + record)
+            or record.endswith("." + host))
 
 
 def _xdg(var, fallback):
@@ -177,20 +224,27 @@ class Store:
                for k, v in DEFAULT_SETTINGS.items()}
         if not isinstance(raw, dict):
             return out
-        if isinstance(raw.get("engine"), str):
+        if raw.get("engine") in ENGINES:
             out["engine"] = raw["engine"]
         if isinstance(raw.get("shield_enabled"), bool):
             out["shield_enabled"] = raw["shield_enabled"]
         hosts = raw.get("shield_paused_hosts")
         if isinstance(hosts, list):
             out["shield_paused_hosts"] = [h for h in hosts if isinstance(h, str)]
-        for key in ("sleep_pinned", "keep_awake_enabled", "split_enabled"):
+        for key in ("sleep_pinned", "keep_awake_enabled", "split_enabled",
+                    "restore_session"):
             if isinstance(raw.get(key), bool):
                 out[key] = raw[key]
         out["sleep_after_min"] = sleep.clean_minutes(raw.get("sleep_after_min", 30))
         awake = raw.get("keep_awake_hosts")
         if isinstance(awake, list):
             out["keep_awake_hosts"] = [h for h in awake if isinstance(h, str)]
+        zooms = raw.get("zoom_by_host")
+        if isinstance(zooms, dict):
+            for host, level in zooms.items():
+                level = clean_zoom(level)
+                if isinstance(host, str) and level is not None and level != 1.0:
+                    out["zoom_by_host"][host] = level
         perms = raw.get("permissions")
         if isinstance(perms, dict):
             for host, kinds in perms.items():
@@ -202,6 +256,59 @@ class Store:
 
     def save_settings(self):
         write_json_atomic(self._p("settings.json"), self.settings)
+
+    def set_option(self, key, value):
+        """Check and save one setting. Undo the change if the write fails."""
+        value = check_option(key, value)
+        before = self.settings[key]
+        self.settings[key] = value
+        try:
+            self.save_settings()
+        except OSError:
+            self.settings[key] = before
+            raise
+
+    def zoom_for(self, host):
+        return self.settings["zoom_by_host"].get(registrable_host(host), 1.0)
+
+    def set_zoom(self, host, level):
+        """Save the zoom LEVEL for HOST. A level of 1.0 removes the entry."""
+        site = registrable_host(host)
+        level = clean_zoom(level)
+        if not site or level is None:
+            return
+        zooms = self.settings["zoom_by_host"]
+        before = zooms.get(site)
+        if level == 1.0:
+            zooms.pop(site, None)
+        else:
+            zooms[site] = level
+        try:
+            self.save_settings()
+        except OSError:
+            if before is None:
+                zooms.pop(site, None)
+            else:
+                zooms[site] = before
+            raise
+
+    def forget_permission(self, origin, kind=None):
+        """Remove one saved answer, or all answers of ORIGIN if KIND is None."""
+        perms = self.settings["permissions"]
+        if origin not in perms:
+            return
+        before = dict(perms[origin])
+        if kind is None:
+            del perms[origin]
+        else:
+            perms[origin].pop(kind, None)
+            if not perms[origin]:
+                del perms[origin]
+        try:
+            self.save_settings()
+        except OSError:
+            perms[origin] = before
+            raise
 
     def keep_awake(self, host):
         return registrable_host(host) in self.settings["keep_awake_hosts"]
@@ -372,3 +479,22 @@ class Store:
             updated = {k: v for k, v in self.hidden.items() if k != site}
             write_json_atomic(self._p("hidden.json"), updated)
             self.hidden = updated
+
+    def remove_hidden(self, host, selector):
+        """Remove one saved SELECTOR of HOST."""
+        site = registrable_host(host)
+        sels = self.hidden.get(site, [])
+        if selector not in sels:
+            return
+        updated = dict(self.hidden)
+        rest = [s for s in sels if s != selector]
+        if rest:
+            updated[site] = rest
+        else:
+            del updated[site]
+        write_json_atomic(self._p("hidden.json"), updated)
+        self.hidden = updated
+
+    def clear_all_hidden(self):
+        write_json_atomic(self._p("hidden.json"), {})
+        self.hidden = {}

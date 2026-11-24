@@ -124,12 +124,26 @@ class TabRow(Gtk.EventBox):
         if event.button == 1 and event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS:
             self.start_rename()
         elif event.button == 1 and event.type == Gdk.EventType.BUTTON_PRESS:
-            self.win.select_tab(self.tab)
+            if self.win.active is self.tab and self._on_mark(event):
+                # A click on the mark of the selected row opens the site card.
+                self.win.open_site_card(self.tab)
+            else:
+                self.win.select_tab(self.tab)
         elif event.button == 2:
             self.win.close_tab(self.tab)
         elif event.button == 3:
             self.win.tab_menu(self.tab, event)
         return True
+
+    def _on_mark(self, event):
+        if not self.mark.get_visible():
+            return False
+        origin = self.mark.translate_coordinates(self, 0, 0)
+        if origin is None:
+            return False
+        alloc = self.mark.get_allocation()
+        return (origin[0] <= event.x <= origin[0] + alloc.width
+                and origin[1] <= event.y <= origin[1] + alloc.height)
 
     def start_rename(self):
         """Show an entry in place of the title. Enter saves, Esc cancels."""

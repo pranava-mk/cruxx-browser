@@ -184,6 +184,28 @@ paned.cruxx-split > separator {{ background-color: {hairline}; min-width: 5px; m
 .cruxx-find.missed .cruxx-count {{ color: {red}; }}
 .cruxx-find button {{ padding: 0; min-width: 24px; min-height: 24px; border: none;
   border-radius: 12px; color: {muted_ink}; }}
+.cruxx-settings {{ background-color: {background}; }}
+.cruxx-nav {{ background-color: transparent; padding: 14px 8px; }}
+.cruxx-nav row {{ border-radius: 9px; padding: 6px 12px; background-color: transparent;
+  color: {muted_ink}; }}
+.cruxx-nav row:hover {{ background-color: {hover}; }}
+.cruxx-nav row:selected {{ background-color: {wash}; }}
+.cruxx-nav row:selected label {{ color: {foreground}; }}
+.cruxx-section-title {{ font-size: 20px; font-weight: 600; color: {foreground}; }}
+.cruxx-subtitle {{ font-size: 13px; font-weight: 600; color: {foreground};
+  margin-top: 14px; }}
+.cruxx-key {{ font-size: 12px; color: {foreground}; }}
+.cruxx-formrow {{ padding: 9px 0; }}
+.cruxx-action {{ padding: 3px 12px; background-color: {tile}; color: {foreground};
+  border-radius: 8px; min-height: 22px; }}
+.cruxx-action:hover {{ background-color: {hover}; }}
+.cruxx-action:disabled {{ color: {faint_ink}; }}
+.cruxx-pop {{ background-color: {background}; border: 1px solid {hairline};
+  border-radius: 12px; }}
+.cruxx-pop .cruxx-subtitle {{ margin-top: 0; }}
+switch {{ background-color: {wash}; border: 1px solid {hairline}; color: {foreground}; }}
+switch:checked {{ background-color: {accent}; }}
+switch slider {{ background-color: {foreground}; border: none; }}
 """
 
 
