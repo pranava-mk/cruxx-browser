@@ -11,11 +11,15 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
 from . import omnibox, security, store, theme  # noqa: E402
+from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
+                         SwitcherPrompt)
+from .sidebar import TabStrip  # noqa: E402
 from .tab import Tab, js_call, read_resource, rgba  # noqa: E402
+from .widgets import Glyph  # noqa: E402
 
 log = logging.getLogger(__name__)
 CLOSED_CAP = 25
-STRIP_WIDTH = 220
+STATUS_HIDE_MS = 120
 ZOOM_STEP = 0.1
 
 PERMISSION_KINDS = (
@@ -245,7 +249,7 @@ class Window(Gtk.ApplicationWindow):
         self.side = "left"
         self.strip_visible = True
         self._fullscreen = False
-        self._rebuilding = False
+        self._status_src = 0
         self._refresh_src = 0
         self._save_src = 0
         self._provider = None
@@ -267,66 +271,65 @@ class Window(Gtk.ApplicationWindow):
 
     # construction
     def _build(self):
-        self.entry = Gtk.Entry(hexpand=True)
-        self.entry.set_placeholder_text("Search or enter address")
-        self.entry.connect("activate", self._on_entry_activate)
-        self.entry.connect("changed", self._on_entry_changed)
-        self.completion = Gtk.EntryCompletion()
-        self.completion_model = Gtk.ListStore(str)
-        self.completion.set_model(self.completion_model)
-        self.completion.set_text_column(0)
-        self.completion.set_match_func(lambda *_a: True)
-        self.completion.set_inline_completion(False)
-        self.completion.connect("match-selected", self._on_match_selected)
-        self.entry.set_completion(self.completion)
+        # The settings button replaces the old toolbar menu.
         self.menu_button = Gtk.MenuButton()
-        self.menu_button.add(Gtk.Image.new_from_icon_name(
-            "open-menu-symbolic", Gtk.IconSize.BUTTON))
+        self.menu_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.menu_button.get_style_context().add_class("cruxx-door")
+        self.menu_button.add(Glyph("sliders", 26, 11, 1.3))
+        self.menu_button.set_tooltip_text("Menu")
         self._build_menu()
-        self.omni_box = Gtk.Box(spacing=4)
-        self.omni_box.set_border_width(4)
-        self.omni_box.pack_start(self.entry, True, True, 0)
-        self.omni_box.pack_start(self.menu_button, False, False, 0)
-
-        self.tab_list = Gtk.ListBox()
-        self.tab_list.set_selection_mode(Gtk.SelectionMode.BROWSE)
-        self.tab_list.connect("row-selected", self._on_row_selected)
-        self.left_scroll = Gtk.ScrolledWindow(vexpand=True)
-        self.left_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.left_scroll.add(self.tab_list)
-        self.left_slot = Gtk.Box()
-        self.left_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.left_col.set_size_request(STRIP_WIDTH, -1)
-        self.left_col.get_style_context().add_class("cruxx-strip")
-        self.left_col.pack_start(self.left_slot, False, False, 0)
-        self.left_col.pack_start(self.left_scroll, True, True, 0)
-
-        self.top_slot = Gtk.Box()
-        self.tab_bar = Gtk.Box(spacing=2)
-        self.top_scroll = Gtk.ScrolledWindow()
-        self.top_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        self.top_scroll.add(self.tab_bar)
+        self.strip = TabStrip(self, self.menu_button)
+        self.prompt = AddressPrompt(self)
+        self.switcher = SwitcherPrompt(self)
 
         self.bars = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.stack = Gtk.Stack()
-        self.find_bar = self._build_find_bar()
         self.panel = Panel(self)
+        # Floating things lie over the page, in this order from the bottom.
+        self.overlay = Gtk.Overlay()
+        self.overlay.add(self.stack)
+        self.scrim = Gtk.EventBox()
+        self.scrim.set_visible_window(True)
+        self.scrim.get_style_context().add_class("cruxx-scrim")
+        self.scrim.connect("button-press-event", lambda *_: self.hide_prompts() or True)
+        self.status = Gtk.Label(ellipsize=Pango.EllipsizeMode.MIDDLE)
+        self.status.get_style_context().add_class("cruxx-status")
+        self.status.set_halign(Gtk.Align.START)
+        self.status.set_valign(Gtk.Align.END)
+        self.status.set_margin_start(10)
+        self.status.set_margin_end(10)
+        self.status.set_margin_bottom(10)
+        self.find_bar = self._build_find_bar()
+        for widget in (self.scrim, self.status, self.find_bar,
+                       self.prompt.card, self.switcher.card):
+            widget.set_no_show_all(True)
+            widget.hide()
+            self.overlay.add_overlay(widget)
+        self.overlay.set_overlay_pass_through(self.status, True)
+        self.overlay.connect("get-child-position", self._place_child)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        right.pack_start(self.top_slot, False, False, 0)
-        right.pack_start(self.top_scroll, False, False, 0)
+        right.pack_start(self.strip.top, False, False, 0)
         right.pack_start(self.bars, False, False, 0)
-        right.pack_start(self.stack, True, True, 0)
-        right.pack_start(self.find_bar, False, False, 0)
+        right.pack_start(self.overlay, True, True, 0)
         root = Gtk.Box()
-        root.pack_start(self.left_col, False, False, 0)
+        root.pack_start(self.strip.left, False, False, 0)
         root.pack_start(right, True, True, 0)
         root.pack_start(self.panel, False, False, 0)
         self.add(root)
-        for widget in (self.left_col, self.left_scroll, self.top_scroll, self.find_bar):
-            widget.set_no_show_all(True)
         root.show_all()
-        self._build_switcher()
         self._layout()
+
+    def _place_child(self, overlay, widget, rect):
+        """Put a prompt card in the middle of the page, a little high."""
+        if widget not in (self.prompt.card, self.switcher.card):
+            return False
+        area = overlay.get_allocation()
+        width = min(FIELD_WIDTH, max(200, area.width - 28))
+        rect.x = (area.width - width) // 2
+        rect.y = max(16, (area.height - FIELD_HEIGHT) // 2 - LIFT)
+        rect.width = width
+        rect.height = widget.get_preferred_height_for_width(width)[1]
+        return True
 
     def _build_menu(self):
         menu = Gtk.Menu()
@@ -377,36 +380,34 @@ class Window(Gtk.ApplicationWindow):
         tab.view.reload()
 
     def _build_find_bar(self):
-        bar = Gtk.Box(spacing=4)
-        bar.set_border_width(4)
-        self.find_entry = Gtk.SearchEntry(hexpand=True)
-        self.find_entry.connect("search-changed", self._on_find_changed)
+        bar = Gtk.Box(spacing=6)
+        bar.get_style_context().add_class("cruxx-find")
+        bar.set_halign(Gtk.Align.END)
+        bar.set_valign(Gtk.Align.START)
+        bar.set_margin_top(12)
+        bar.set_margin_end(14)
+        self.find_entry = Gtk.Entry()
+        self.find_entry.set_has_frame(False)
+        self.find_entry.set_placeholder_text("Find on page")
+        self.find_entry.set_size_request(150, -1)
+        self.find_entry.set_valign(Gtk.Align.CENTER)
+        self.find_entry.connect("changed", self._on_find_changed)
         self.find_entry.connect("activate", lambda *_: self._find_step(False))
         self.find_entry.connect("key-press-event", self._on_find_key)
-        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
-        close.connect("clicked", lambda *_: self.close_find())
-        bar.pack_start(self.find_entry, True, True, 0)
-        bar.pack_start(close, False, False, 0)
+        self.find_count = Gtk.Label()
+        self.find_count.get_style_context().add_class("cruxx-count")
+        bar.pack_start(self.find_entry, False, False, 0)
+        bar.pack_start(self.find_count, False, False, 0)
+        for kind, action in (("up", lambda *_: self._find_step(True)),
+                             ("down", lambda *_: self._find_step(False)),
+                             ("close", lambda *_: self.close_find())):
+            button = Gtk.Button()
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.add(Glyph(kind, 24, 7 if kind == "close" else 8, 1.4))
+            button.connect("clicked", action)
+            bar.pack_start(button, False, False, 0)
+        bar.show_all()
         return bar
-
-    def _build_switcher(self):
-        self.switcher = Gtk.Popover(relative_to=self.entry)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_border_width(6)
-        self.switch_entry = Gtk.SearchEntry()
-        self.switch_list = Gtk.ListBox()
-        self.switch_list.set_filter_func(self._switch_filter)
-        self.switch_entry.connect("search-changed", lambda *_: self.switch_list.invalidate_filter())
-        self.switch_entry.connect("activate", self._switch_first)
-        self.switch_list.connect("row-activated", self._switch_pick)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_min_content_height(260)
-        scroll.set_min_content_width(380)
-        scroll.add(self.switch_list)
-        box.pack_start(self.switch_entry, False, False, 0)
-        box.pack_start(scroll, True, True, 0)
-        self.switcher.add(box)
-        box.show_all()
 
     # theme
     def _apply_theme(self):
@@ -442,18 +443,8 @@ class Window(Gtk.ApplicationWindow):
 
     # layout
     def _layout(self):
-        parent = self.omni_box.get_parent()
-        if parent is not None:
-            parent.remove(self.omni_box)
-        left = self.side == "left"
-        (self.left_slot if left else self.top_slot).pack_start(self.omni_box, True, True, 0)
-        self.left_col.set_visible(left)
-        self.left_scroll.set_visible(left and self.strip_visible)
-        self.top_scroll.set_visible((not left) and self.strip_visible)
-        # left_col has no_show_all, so show_all() does not show its slot.
-        self.left_slot.show()
-        self.top_slot.show()
-        self.omni_box.show_all()
+        self.strip.set_mode(self.side)
+        self.strip.set_visible(self.strip_visible)
         self.refresh()
 
     def toggle_side(self):
@@ -476,70 +467,29 @@ class Window(Gtk.ApplicationWindow):
 
     # strip
     def refresh(self):
+        """Match the strip to the tab list. Do it once in an idle call."""
         if not self._refresh_src:
             self._refresh_src = GLib.idle_add(self._do_refresh)
 
-    def _item(self, tab):
-        box = Gtk.Box(spacing=6)
-        box.set_border_width(4)
-        if tab.favicon is not None:
-            image = Gtk.Image()
-            image.set_from_surface(tab.favicon)
-            box.pack_start(image, False, False, 0)
-        label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
-        if tab.pinned:
-            label.set_text((tab.title or "?")[0].upper())
-            box.set_tooltip_text(tab.title)
-        else:
-            label.set_text(tab.title)
-        if tab.private:
-            box.get_style_context().add_class("private")
-        box.pack_start(label, True, True, 0)
-        return box
-
     def _do_refresh(self):
         self._refresh_src = 0
-        self._rebuilding = True
-        for child in self.tab_list.get_children():
-            child.destroy()
-        for child in self.tab_bar.get_children():
-            child.destroy()
-        selected = None
-        for tab in self.tabs:
-            row = Gtk.ListBoxRow()
-            row.tab = tab
-            event_box = Gtk.EventBox()
-            event_box.add(self._item(tab))
-            event_box.connect("button-press-event", self._on_item_press, tab)
-            row.add(event_box)
-            self.tab_list.add(row)
-            if tab is self.active:
-                selected = row
-            button = Gtk.Button()
-            button.add(self._item(tab))
-            button.set_relief(Gtk.ReliefStyle.NONE)
-            if tab is self.active:
-                button.get_style_context().add_class("active-tab")
-            button.connect("clicked", lambda _b, t=tab: self.select_tab(t))
-            button.connect("button-press-event", self._on_item_press, tab)
-            self.tab_bar.pack_start(button, tab.pinned is False, tab.pinned is False, 0)
-        self.tab_list.show_all()
-        self.tab_bar.show_all()
-        if selected is not None:
-            self.tab_list.select_row(selected)
-        self._rebuilding = False
+        self._sync_strip()
+        return False
+
+    def _sync_strip(self):
+        self.strip.sync(self.tabs, self.active)
+        self._set_title()
+
+    def _set_title(self):
         self.set_title(((self.active.title + " - ") if self.active else "") + "cruxx browser")
-        return False
 
-    def _on_item_press(self, _widget, event, tab):
-        if event.button == 2:
-            self.close_tab(tab)
-            return True
-        return False
-
-    def _on_row_selected(self, _list, row):
-        if not self._rebuilding and row is not None:
-            self.select_tab(row.tab)
+    def icon_for(self, url):
+        """Return a favicon of an open tab on the same host, or None."""
+        host = store.host_of(url)
+        for tab in self.tabs:
+            if tab.favicon is not None and host and tab.host == host:
+                return tab.favicon
+        return None
 
     # tab operations
     def _sort_tabs(self):
@@ -555,7 +505,7 @@ class Window(Gtk.ApplicationWindow):
         else:
             self.select_tab(tab)
             if not url:
-                self.entry.grab_focus()
+                self.focus_omnibox()
         return tab
 
     def open_in_current(self, url):
@@ -568,14 +518,15 @@ class Window(Gtk.ApplicationWindow):
         if tab not in self.tabs:
             return
         self.close_find()
+        self.hide_prompts(refocus=False)
+        self._hide_status()
         self.active = tab
         if not tab.private:
             self._last_normal = self.tabs.index(tab)
         tab.ensure_view()
         self.stack.set_visible_child(tab.view)
-        self._sync_entry()
         self._sync_bars()
-        self.refresh()
+        self._sync_strip()
         self.schedule_save()
         if tab.url:
             tab.view.grab_focus()
@@ -627,10 +578,11 @@ class Window(Gtk.ApplicationWindow):
 
     # tab callbacks
     def tab_changed(self, tab):
-        self.refresh()
+        """A title, address or icon changed. Update its row in place."""
+        self.strip.update(tab, self.active)
         self.schedule_save()
         if tab is self.active:
-            self._sync_entry()
+            self._set_title()
 
     def load_changed(self, tab, event):
         if event == WebKit2.LoadEvent.FINISHED:
@@ -645,45 +597,79 @@ class Window(Gtk.ApplicationWindow):
         if self.failed_cb:
             self.failed_cb(tab)
 
-    # omnibox
-    def _sync_entry(self):
-        if self.entry.has_focus() or self.active is None:
+    # address field and tab switcher
+    def focus_omnibox(self):
+        """Show the address field with the current address selected."""
+        tab = self.active
+        if tab is None:
             return
-        url = self.active.url
-        self.entry.set_text("" if url in ("", "about:blank") else url)
+        self.switcher.close()
+        text = omnibox.editable(tab.url) if tab.url != "about:blank" else ""
+        # Over a page the page is dimmed. An empty tab has no cover.
+        self.scrim.set_visible(bool(text))
+        self.prompt.open(text)
 
-    def _on_entry_activate(self, entry):
-        url = omnibox.classify(entry.get_text(), self.store.settings["engine"])
-        if url is None:
-            return
-        self.open_in_current(url)
-        if self.active and self.active.view:
+    def open_switcher(self):
+        self.prompt.close()
+        self.scrim.show()
+        self.switcher.open("")
+
+    def hide_prompts(self, refocus=True):
+        was_open = self.prompt.is_open() or self.switcher.is_open()
+        self.prompt.close()
+        self.switcher.close()
+        self.scrim.hide()
+        if was_open and refocus and self.active and self.active.view:
             self.active.view.grab_focus()
 
-    def _on_entry_changed(self, entry):
-        text = entry.get_text()
-        self.completion_model.clear()
-        if not entry.has_focus():
+    # status line
+    def link_hover(self, tab, uri):
+        """Show the link under the pointer. Hide it a moment after it goes."""
+        if tab is not self.active:
             return
-        for url in omnibox.rank(self.store.history, text):
-            self.completion_model.append([url])
+        if self._status_src:
+            GLib.source_remove(self._status_src)
+            self._status_src = 0
+        if not uri:
+            self._status_src = GLib.timeout_add(STATUS_HIDE_MS, self._hide_status)
+            return
+        area = self.overlay.get_allocation()
+        self.status.set_max_width_chars(max(10, int(min(area.width * 0.6, 640) / 7)))
+        self.status.set_text(uri[:600])
+        # A bubble under the pointer moves to the other corner.
+        self.status.set_halign(Gtk.Align.END if self._pointer_in_corner(area)
+                               else Gtk.Align.START)
+        self.status.show()
 
-    def _on_match_selected(self, _completion, model, tree_iter):
-        self.entry.set_text(model[tree_iter][0])
-        self.entry.emit("activate")
-        return True
+    def _hide_status(self):
+        if self._status_src:
+            GLib.source_remove(self._status_src)
+        self._status_src = 0
+        self.status.hide()
+        return False
 
-    def focus_omnibox(self):
-        self.entry.grab_focus()
-        self.entry.select_region(0, -1)
+    def _pointer_in_corner(self, area):
+        window = self.get_window()
+        if window is None:
+            return False
+        device = Gdk.Display.get_default().get_default_seat().get_pointer()
+        _w, x, y, _mask = window.get_device_position(device)
+        origin = self.overlay.translate_coordinates(self, 0, 0)
+        if origin is None:
+            return False
+        x, y = x - origin[0], y - origin[1]
+        return area.height - y < 50 and x < min(area.width * 0.6, 640) + 22
 
     # find
     def open_find(self):
         if self.active is None:
             return
-        self.find_bar.show_all()
+        self.hide_prompts(refocus=False)
+        self._wire_find(self.active)
+        self.find_bar.show()
         self.find_entry.grab_focus()
         self.find_entry.select_region(0, -1)
+        self._on_find_changed(self.find_entry)
 
     def close_find(self):
         if self.find_bar.get_visible():
@@ -692,11 +678,35 @@ class Window(Gtk.ApplicationWindow):
                 self.active.view.get_find_controller().search_finish()
                 self.active.view.grab_focus()
 
+    def _wire_find(self, tab):
+        """Connect the find results of TAB once."""
+        if tab.view is None or getattr(tab, "find_wired", False):
+            return
+        tab.find_wired = True
+        controller = tab.view.get_find_controller()
+        controller.connect("found-text", self._on_found, tab)
+        controller.connect("failed-to-find-text", self._on_not_found, tab)
+
+    def _on_found(self, _controller, count, tab):
+        if tab is self.active:
+            self._show_found("%d match%s" % (count, "" if count == 1 else "es"), False)
+
+    def _on_not_found(self, _controller, tab):
+        if tab is self.active:
+            self._show_found("No matches", True)
+
+    def _show_found(self, text, missed):
+        self.find_count.set_text(text)
+        context = self.find_bar.get_style_context()
+        (context.add_class if missed else context.remove_class)("missed")
+
     def _on_find_changed(self, entry):
         if not (self.active and self.active.view):
             return
         controller = self.active.view.get_find_controller()
         text = entry.get_text()
+        if not text:
+            self._show_found("", False)
         if text:
             options = WebKit2.FindOptions.CASE_INSENSITIVE | WebKit2.FindOptions.WRAP_AROUND
             controller.search(text, int(options), 1000)
@@ -713,37 +723,6 @@ class Window(Gtk.ApplicationWindow):
             self._find_step(bool(event.state & Gdk.ModifierType.SHIFT_MASK))
             return True
         return False
-
-    # switcher
-    def open_switcher(self):
-        for child in self.switch_list.get_children():
-            child.destroy()
-        for tab in self.tabs:
-            row = Gtk.ListBoxRow()
-            row.tab = tab
-            label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
-            label.set_text(tab.title)
-            label.set_tooltip_text(tab.url)
-            row.add(label)
-            self.switch_list.add(row)
-        self.switch_list.show_all()
-        self.switch_entry.set_text("")
-        self.switcher.popup()
-        self.switch_entry.grab_focus()
-
-    def _switch_filter(self, row):
-        needle = self.switch_entry.get_text().strip().lower()
-        return not needle or needle in (row.tab.title + " " + row.tab.url).lower()
-
-    def _switch_first(self, *_args):
-        for row in self.switch_list.get_children():
-            if row.get_child_visible() and self._switch_filter(row):
-                self._switch_pick(None, row)
-                return
-
-    def _switch_pick(self, _list, row):
-        self.switcher.popdown()
-        self.select_tab(row.tab)
 
     # reader, hide, zoom
     def toggle_reader(self):
@@ -1098,24 +1077,18 @@ class Window(Gtk.ApplicationWindow):
         return True
 
     def _escape(self):
-        if self.panel.is_open():
+        if self.prompt.is_open() or self.switcher.is_open():
+            self.hide_prompts()
+        elif self.panel.is_open():
             self.panel.close()
         elif self.find_bar.get_visible():
             self.close_find()
-        elif self.active and self.active.view and self.active.url and not self.entry.has_focus():
+        elif self.active and self.active.view and self.active.url:
             self.active.run_in_world("if (window.__cruxxPick) { window.__cruxxPick.stop(); }")
             return False
-        elif self.entry.has_focus():
-            self._sync_entry_force()
-            if self.active and self.active.view:
-                self.active.view.grab_focus()
         else:
             return False
         return True
-
-    def _sync_entry_force(self):
-        url = self.active.url if self.active else ""
-        self.entry.set_text("" if url in ("", "about:blank") else url)
 
     def _close_active(self):
         if self.active:

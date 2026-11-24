@@ -96,6 +96,8 @@ class Tab:
                 ("create", self._on_create),
                 ("permission-request", self._on_permission),
                 ("context-menu", self._on_context_menu),
+                ("mouse-target-changed", self._on_target),
+                ("leave-notify-event", self._on_leave),
                 ("load-failed-with-tls-errors", self._on_tls_error),
                 ("enter-fullscreen", self._on_enter_fullscreen),
                 ("leave-fullscreen", self._on_leave_fullscreen)):
@@ -210,6 +212,15 @@ class Tab:
             self._last_popup = now
             self.win.open_tab(uri, private=self.private)
         return None
+
+    def _on_target(self, _view, hit, _modifiers):
+        """Tell the window which link is under the pointer."""
+        uri = hit.get_link_uri() if hit.context_is_link() else None
+        self.win.link_hover(self, uri)
+
+    def _on_leave(self, _view, _event):
+        self.win.link_hover(self, None)
+        return False
 
     def _on_permission(self, view, request):
         return self.win.ask_permission(self, request)

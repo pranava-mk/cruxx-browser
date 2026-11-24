@@ -63,29 +63,115 @@ def load(path=None):
         return dict(FALLBACK)
 
 
+# The grey steps of the design. Each one is the text colour at a low alpha
+# over the page colour. Light and dark themes use the same steps.
+# See docs/design-notes.md for the upstream names.
+INK_STEPS = {
+    "muted_ink": 0.55,
+    "faint_ink": 0.30,
+    "hairline": 0.11,
+    "wash": 0.075,
+    "hover": 0.045,
+    "tile": 0.04,
+    "pin_live": 0.10,
+}
+
+
 def css(c):
     """Return GTK CSS for colour dict C. All values are validated."""
-    return """
+    values = dict(c)
+    for name, alpha in INK_STEPS.items():
+        values[name] = "alpha(%s, %s)" % (c["foreground"], alpha)
+    # The column and the strip are a little off the page colour.
+    values["frame"] = "mix(%s, %s, 0.04)" % (c["background"], c["foreground"])
+    return _CSS.format(**values)
+
+
+_CSS = """
 window, .background {{ background-color: {background}; color: {foreground}; }}
 entry {{ background-color: {lighter_background}; color: {light_foreground};
-  border: 1px solid {muted}; border-radius: 6px; padding: 4px 8px; box-shadow: none; }}
+  border: 1px solid {hairline}; border-radius: 8px; padding: 4px 8px; box-shadow: none; }}
 entry:focus {{ border-color: {accent}; }}
-list, row, .cruxx-strip {{ background-color: {dark_background}; color: {foreground}; }}
-row:hover {{ background-color: {lighter_background}; }}
-row:selected, row:selected label {{ background-color: {selection}; color: {light_foreground}; }}
-button {{ background-image: none; background-color: {lighter_background};
-  color: {foreground}; border: 1px solid {muted}; box-shadow: none; }}
-button:hover {{ border-color: {accent}; }}
-button.active-tab {{ background-color: {selection}; }}
-.cruxx-panel {{ background-color: {dark_background}; border-left: 1px solid {muted}; }}
+button {{ background-image: none; background-color: transparent;
+  color: {foreground}; border: 1px solid transparent; border-radius: 8px;
+  box-shadow: none; text-shadow: none; }}
+button:hover {{ background-color: {hover}; }}
+.cruxx-panel {{ background-color: {frame}; border-left: 1px solid {hairline}; }}
+.cruxx-panel list, .cruxx-panel row {{ background-color: transparent; color: {foreground}; }}
+.cruxx-panel row {{ border-radius: 9px; padding: 2px 4px; }}
+.cruxx-panel row:hover {{ background-color: {hover}; }}
+.cruxx-panel row:selected, .cruxx-panel row:selected label {{
+  background-color: {wash}; color: {foreground}; }}
 infobar, infobar box {{ background-color: {lighter_background}; color: {light_foreground}; }}
-infobar button {{ padding: 2px 10px; }}
+infobar button {{ padding: 2px 10px; border-color: {hairline}; }}
 .private label {{ font-style: italic; color: {accent}; }}
-.muted {{ color: {muted}; }}
+.muted {{ color: {muted_ink}; }}
 .error {{ color: {red}; }}
 progressbar progress {{ background-color: {accent}; }}
-popover, popover box {{ background-color: {dark_background}; color: {foreground}; }}
-""".format(**c)
+popover, popover box {{ background-color: {background}; color: {foreground}; }}
+menu, .menu {{ background-color: {background}; color: {foreground};
+  border: 1px solid {hairline}; border-radius: 10px; padding: 4px; }}
+menuitem {{ border-radius: 6px; padding: 5px 10px; }}
+menuitem:hover {{ background-color: {wash}; }}
+
+/* Column and strip */
+.cruxx-sidebar, .cruxx-strip {{ background-color: {frame}; }}
+.cruxx-divider {{ background-color: {hairline}; min-width: 1px; min-height: 1px; }}
+.cruxx-row, .cruxx-pin, .cruxx-new, .cruxx-door {{
+  border-radius: 9px; background-color: transparent; }}
+.cruxx-row label, .cruxx-new label {{ font-size: 12.5px; color: {muted_ink}; }}
+.cruxx-row.hover {{ background-color: {hover}; }}
+.cruxx-row.hover label {{ color: alpha({foreground}, 0.7); }}
+.cruxx-row.live {{ background-color: {wash}; }}
+.cruxx-row.live label {{ color: {foreground}; }}
+.cruxx-row.private label {{ font-style: italic; }}
+.cruxx-pin {{ background-color: {tile}; color: {muted_ink}; }}
+.cruxx-pin.hover {{ background-color: {hover}; color: alpha({foreground}, 0.7); }}
+.cruxx-pin.live {{ background-color: {pin_live}; color: {foreground}; }}
+.cruxx-new {{ color: {faint_ink}; }}
+.cruxx-new label {{ color: {faint_ink}; }}
+.cruxx-new.hover {{ background-color: {hover}; color: alpha({foreground}, 0.7); }}
+.cruxx-new.hover label {{ color: alpha({foreground}, 0.7); }}
+.cruxx-mark {{ color: {foreground}; }}
+.cruxx-close {{ color: {muted_ink}; background-color: alpha({foreground}, 0.07); border-radius: 50%; }}
+.cruxx-door {{ color: {muted_ink}; padding: 0; border: none; min-width: 26px;
+  min-height: 26px; border-radius: 8px; }}
+.cruxx-door:hover, .cruxx-door:checked {{ background-color: {hover}; color: alpha({foreground}, 0.7); }}
+scrolledwindow.cruxx-scroll, scrolledwindow.cruxx-scroll viewport {{ background-color: transparent; }}
+.cruxx-scroll undershoot, .cruxx-scroll overshoot {{ background: none; }}
+
+/* Floating things */
+.cruxx-scrim {{ background-color: alpha({background}, 0.74); }}
+.cruxx-card {{ background-color: {background}; border: 1px solid {hairline};
+  border-radius: 14px; box-shadow: 0 8px 24px alpha(black, 0.10); }}
+.cruxx-card.refused {{ border-color: alpha({red}, 0.35); }}
+.cruxx-field {{ padding: 14px 22px; }}
+.cruxx-hint {{ font-size: 15.5px; color: alpha({foreground}, 0.3); }}
+.cruxx-list {{ padding: 6px; }}
+.cruxx-card selection, .cruxx-find selection {{ background-color: {accent}; color: {background}; }}
+.cruxx-card entry, .cruxx-field entry {{ background: none; border: none; box-shadow: none;
+  padding: 0; min-height: 22px; font-size: 15.5px; color: {foreground}; caret-color: {foreground}; }}
+.cruxx-field entry:focus {{ border: none; box-shadow: none; }}
+.cruxx-offer {{ border-radius: 9px; background-color: transparent; }}
+.cruxx-offer.hover {{ background-color: {hover}; }}
+.cruxx-offer.picked {{ background-color: {wash}; }}
+.cruxx-offer .cruxx-key {{ font-size: 13px; color: {foreground}; }}
+.cruxx-offer .cruxx-sub {{ font-size: 12px; color: {muted_ink}; }}
+.cruxx-offer .cruxx-sym {{ color: {muted_ink}; }}
+.cruxx-note {{ font-size: 13px; color: {muted_ink}; }}
+.cruxx-status {{ background-color: {background}; border: 1px solid {hairline};
+  border-radius: 13px; padding: 0 11px; min-height: 24px; font-size: 12px;
+  color: {foreground}; box-shadow: 0 3px 12px alpha(black, 0.10); }}
+.cruxx-find {{ background-color: {background}; border: 1px solid {hairline};
+  border-radius: 999px; padding: 8px 8px 8px 16px; box-shadow: 0 5px 18px alpha(black, 0.12); }}
+.cruxx-find.missed {{ border-color: alpha({red}, 0.35); }}
+.cruxx-find entry {{ background: none; border: none; box-shadow: none; padding: 0;
+  min-height: 16px; font-size: 12.5px; color: {foreground}; caret-color: {foreground}; }}
+.cruxx-find .cruxx-count {{ font-size: 10px; font-weight: 500; color: {muted_ink}; }}
+.cruxx-find.missed .cruxx-count {{ color: {red}; }}
+.cruxx-find button {{ padding: 0; min-width: 24px; min-height: 24px; border: none;
+  border-radius: 12px; color: {muted_ink}; }}
+"""
 
 
 class Watcher:

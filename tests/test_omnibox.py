@@ -82,6 +82,110 @@ class RankTest(unittest.TestCase):
         self.assertEqual(len(omnibox.rank(entries, "a")), 8)
 
 
+class EditableTest(unittest.TestCase):
+    def test_cases(self):
+        cases = [
+            ("https://example.com/", "example.com"),
+            ("https://example.com/a?b=1", "example.com/a?b=1"),
+            ("http://127.0.0.1:8000/", "127.0.0.1:8000"),
+            ("http://localhost:3000/x", "localhost:3000/x"),
+            # The field would add https. So plain http must keep its scheme.
+            ("http://example.com/", "http://example.com/"),
+            ("about:blank", "about:blank"),
+            ("", ""),
+        ]
+        for url, want in cases:
+            with self.subTest(url=url):
+                self.assertEqual(omnibox.editable(url), want)
+
+    def test_round_trip(self):
+        for url in ("https://example.com/", "http://127.0.0.1:8000/a",
+                    "https://example.com/dir/"):
+            self.assertEqual(omnibox.classify(omnibox.editable(url)).rstrip("/"),
+                             url.rstrip("/"))
+
+
+class SuggestionsTest(unittest.TestCase):
+    HISTORY = [
+        {"url": "https://example.com/a", "title": "Example A", "visits": 3, "last": 5},
+        {"url": "https://other.org/", "title": "Other", "visits": 1, "last": 1},
+    ]
+    MARKS = [{"url": "https://exam.dev/", "title": "Exam notes"}]
+
+    def test_search_row_first(self):
+        rows = omnibox.suggestions("exam", self.HISTORY, self.MARKS)
+        self.assertEqual(rows[0]["kind"], "search")
+        self.assertIn("Search DuckDuckGo for", rows[0]["label"])
+        self.assertTrue(rows[0]["url"].startswith("https://duckduckgo.com/?q=exam"))
+        kinds = {r["url"]: r["kind"] for r in rows[1:]}
+        self.assertEqual(kinds["https://exam.dev/"], "bookmark")
+        self.assertEqual(kinds["https://example.com/a"], "history")
+        self.assertNotIn("https://other.org/", kinds)
+
+    def test_engine_in_label(self):
+        rows = omnibox.suggestions("a b", [], [], "google")
+        self.assertIn("Google", rows[0]["label"])
+        self.assertIn("google.com", rows[0]["url"])
+
+    def test_address_gives_go_row(self):
+        rows = omnibox.suggestions("example.com", self.HISTORY, [])
+        self.assertEqual(rows[0]["kind"], "go")
+        self.assertEqual(rows[0]["url"], "https://example.com")
+
+    def test_empty_and_limit(self):
+        self.assertEqual(omnibox.suggestions("  ", self.HISTORY, self.MARKS), [])
+        many = [{"url": "https://a%d.com/" % i, "title": "", "visits": i, "last": i}
+                for i in range(30)]
+        self.assertEqual(len(omnibox.suggestions("a", many, [], limit=6)), 6)
+
+    def test_duplicate_bookmark_not_repeated(self):
+        marks = [{"url": "https://example.com/a", "title": "A"}]
+        rows = omnibox.suggestions("example", self.HISTORY, marks)
+        self.assertEqual([r["url"] for r in rows].count("https://example.com/a"), 1)
+
+
+class FuzzyTest(unittest.TestCase):
+    def test_miss(self):
+        self.assertIsNone(omnibox.fuzzy_score("zzz", "GitHub"))
+        self.assertIsNone(omnibox.fuzzy_score("git zzz", "GitHub"))
+
+    def test_tiers(self):
+        start = omnibox.fuzzy_score("git", "Mac git hub")
+        inside = omnibox.fuzzy_score("hub", "GitHub")
+        typo = omnibox.fuzzy_score("githb", "GitHub")
+        self.assertEqual((start, inside, typo), (3, 2, 1))
+
+    def test_all_words_needed(self):
+        self.assertEqual(omnibox.fuzzy_score("mac apple", "Mac Studio - Apple"), 6)
+        self.assertIsNone(omnibox.fuzzy_score("mac pear", "Mac Studio - Apple"))
+
+    def test_typo_rules(self):
+        # No typo is forgiven in a short word.
+        self.assertIsNone(omnibox.fuzzy_score("gti", "github"))
+        # A swap of the first two letters is one typo.
+        self.assertEqual(omnibox.fuzzy_score("igthub", "github"), 1)
+        # The first letter must be right.
+        self.assertIsNone(omnibox.fuzzy_score("xithub", "github"))
+
+    def test_abbreviation(self):
+        self.assertEqual(omnibox.fuzzy_score("dwn", "downloads"), 1)
+
+    def test_case_and_empty(self):
+        self.assertEqual(omnibox.fuzzy_score("APPLE", "apple"), 3)
+        self.assertEqual(omnibox.fuzzy_score("", "x"), 0)
+
+    def test_switch_rank(self):
+        tabs = [("Mac Studio - Apple", "https://apple.com/mac"),
+                ("driceroland - GitHub", "https://github.com/driceroland"),
+                ("Are.na", "https://are.na/"),
+                ("Notes", "https://example.com/github")]
+        self.assertEqual(omnibox.switch_rank("", tabs), [0, 1, 2, 3])
+        # A title match is better than a URL match.
+        self.assertEqual(omnibox.switch_rank("github", tabs), [1, 3])
+        self.assertEqual(omnibox.switch_rank("apple", tabs), [0])
+        self.assertEqual(omnibox.switch_rank("nothing", tabs), [])
+
+
 class ArgsTest(unittest.TestCase):
     def test_defaults(self):
         opts = parse_args([])

@@ -13,8 +13,10 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 
 ## Features
 
-- One field (omnibox) for URLs and searches. Completion uses local history only.
-- Tabs in a vertical list or a top bar. Pinned tabs. Restored tabs load only when you select them.
+- One field (omnibox) for URLs and searches. There is no toolbar. The field shows in the middle of the page when you press Ctrl+L or open a new tab. It shows the current address. Esc hides it.
+- Suggestions come from local history and bookmarks only. The first row is the search or the address you typed. Use Up, Down, and Enter. Nothing is sent to the network before Enter.
+- Tabs in a vertical list or a top bar. Pinned tabs show as small square tiles. The close button shows when the pointer is on a row. A faded "New tab" row ends the list. The settings button (menu) is at the bottom of the list.
+- Status line: the address of a link under the pointer shows at the bottom-left of the page. Restored tabs load only when you select them.
 - Ad and tracker blocker. You can pause it for one site.
 - Reading mode.
 - Hide any element on a page. The browser remembers it for that site.
@@ -25,7 +27,7 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Permission requests with Allow and Deny. The default is deny.
 - Error page for TLS errors. No bypass button.
 - Popup blocking. A popup opens only after a user gesture.
-- Find in page, zoom, fullscreen, and a tab switcher.
+- Find in page, zoom, fullscreen, and a tab switcher (Ctrl+K, a floating list with fuzzy match on title and address).
 
 ## Keyboard
 
@@ -34,8 +36,8 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+T | New tab |
 | Ctrl+W | Close tab |
 | Ctrl+Shift+T | Reopen closed tab |
-| Ctrl+L | Focus the omnibox |
-| Ctrl+K | Tab switcher |
+| Ctrl+L | Show the address field |
+| Ctrl+K | Tab switcher (type to filter, Up, Down, Enter) |
 | Ctrl+R, F5 | Reload |
 | Ctrl+Shift+R | Reading mode |
 | Ctrl+[, Alt+Left | Back |
@@ -59,7 +61,7 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+S | Hide or show tab strip |
 | Ctrl+plus, Ctrl+minus, Ctrl+0 | Zoom in, zoom out, reset zoom |
 | F11 | Fullscreen |
-| Esc | Close panel, find bar, or picker |
+| Esc | Close address field, switcher, panel, find bar, or picker |
 | F12 | Web inspector (only with `--dev`) |
 
 ## Install
