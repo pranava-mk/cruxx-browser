@@ -140,6 +140,19 @@ menuitem:hover {{ background-color: {wash}; }}
 scrolledwindow.cruxx-scroll, scrolledwindow.cruxx-scroll viewport {{ background-color: transparent; }}
 .cruxx-scroll undershoot, .cruxx-scroll overshoot {{ background: none; }}
 
+/* Split panes, split rows and spaces */
+.cruxx-pane {{ border: 2px solid transparent; border-radius: 4px; }}
+.cruxx-pane.focus {{ border-color: {accent}; }}
+paned.cruxx-split > separator {{ background-color: {hairline}; min-width: 5px; min-height: 5px; }}
+.cruxx-row.paired {{ border-left: 3px solid {hairline}; border-radius: 3px 9px 9px 3px; }}
+.cruxx-row.paired.live {{ border-left-color: {accent}; }}
+.cruxx-dropzone {{ background-color: alpha({accent}, 0.10); border: 2px dashed {accent}; }}
+.cruxx-space {{ border-radius: 50%; background-color: {tile}; color: {muted_ink};
+  font-size: 10px; font-weight: 500; }}
+.cruxx-space label {{ font-size: 10px; }}
+.cruxx-space.hover {{ background-color: {hover}; color: alpha({foreground}, 0.7); }}
+.cruxx-space.live {{ background-color: {pin_live}; color: {foreground}; }}
+
 /* Floating things */
 .cruxx-scrim {{ background-color: alpha({background}, 0.74); }}
 .cruxx-card {{ background-color: {background}; border: 1px solid {hairline};

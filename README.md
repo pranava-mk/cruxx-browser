@@ -33,6 +33,8 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Clean links. When you type or paste an address, or open a link in a new tab, the app removes tracking parameters (utm_*, fbclid, gclid, msclkid, and others). Other parameters and the part after # stay. Links that the page itself opens are not changed.
 - Rename a tab. Double-click the tab title, or right-click and choose "Rename tab". Enter saves, Esc cancels, an empty name resets the title. The name is saved in the session. A private tab does not save it.
 - Drag tabs to change their order, in the tab column and in the top strip. Drop a tab on the pinned tiles to pin it. Drag a pinned tile into the list to unpin it. The order is saved in the session.
+- Split View. It is off by default. Turn it on with "Split View" in the settings menu (`split_enabled` in `settings.json`). Press Ctrl+Alt+N, or use "Split current page" in the settings menu. The browser pairs the current tab with the next tab. If there is no other tab, it opens a new blank tab and shows the address field. You can also drag a tab from the list onto the page. Drag the divider to change the width of the panes. The pane with the outline gets all page commands (address field, find, reading mode, hide element, zoom, reload, back, forward). Click a pane, or press Ctrl+Alt+Left or Ctrl+Alt+Right, to move the focus. Ctrl+W closes the focused tab. The other pane then takes the whole area. A pair shows as two rows with a bar on the left side. Click one row to select the pair with that pane in focus. "Separate split tabs" (settings menu, tab menu) makes the two tabs normal again. A pinned tab cannot be in a pair. Pairs and the divider position are saved in the session. A pair that has a private tab is not saved. Tab sleep never puts a visible pane to sleep. If you turn Split View off, all pairs end.
+- Spaces. A space is a separate set of tabs and pins. It has a name, an icon (a letter or an emoji), its own split pairs, and its own selected tab. The first space is "Home". Small round marks at the bottom of the tab list show the spaces. Click a mark to switch. Right-click a mark to rename or delete the space, or to add a new space. "New space" is also in the settings menu. The browser asks before it deletes a space that has tabs. A switch does not close the pages of the other spaces. They can sleep as usual. A private tab belongs to the current space. The browser does not save it. The session keeps all spaces. Old session files load into the space "Home". You can have up to 9 spaces.
 - Find in page, zoom, fullscreen, and a tab switcher (Ctrl+K, a floating list with fuzzy match on title and address).
 
 ## Keyboard
@@ -53,6 +55,10 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+Shift+], Ctrl+Shift+[ | Next, previous tab |
 | Ctrl+1 to Ctrl+8 | Go to tab 1 to 8 |
 | Ctrl+9 | Go to last tab |
+| Ctrl+Alt+N | Split the current page (Split View must be on) |
+| Ctrl+Alt+Left, Ctrl+Alt+Right | Move the focus to the left or right pane |
+| Alt+1 to Alt+9 | Go to space 1 to 9 |
+| Ctrl+Alt+Page Up, Ctrl+Alt+Page Down | Previous, next space |
 | Ctrl+F | Find in page |
 | Ctrl+D | Duplicate tab |
 | Ctrl+Shift+C | Copy URL |

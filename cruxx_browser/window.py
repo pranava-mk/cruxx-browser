@@ -11,10 +11,11 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
-from . import cleanlink, memory, omnibox, reorder, security, sleep, store, theme  # noqa: E402
+from . import (cleanlink, memory, omnibox, reorder, security, sleep, spaces,  # noqa: E402
+               store, theme)
 from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
                          SwitcherPrompt)
-from .sidebar import TabStrip  # noqa: E402
+from .sidebar import TabStrip, drop_targets  # noqa: E402
 from .tab import Tab, js_call, read_resource, rgba  # noqa: E402
 from .widgets import Glyph  # noqa: E402
 
@@ -242,8 +243,9 @@ class Window(Gtk.ApplicationWindow):
         self.opts = opts
         self.store = data
         self.shield = app.shield
-        self.tabs = []
-        self.active = None
+        # The tabs live in the spaces. See the properties "tabs" and "active".
+        self.spaces = [spaces.Space()]
+        self.space_index = 0
         self.closed = []
         self.downloads = []
         self.finished_cb = None
@@ -255,7 +257,6 @@ class Window(Gtk.ApplicationWindow):
         self._refresh_src = 0
         self._save_src = 0
         self._provider = None
-        self._last_normal = 0
         # Private tab data. It lives in memory for this window only.
         self.private_paused = set()
         self.private_grants = {}
@@ -274,6 +275,30 @@ class Window(Gtk.ApplicationWindow):
         self.connect("key-press-event", self._on_key)
         self.connect("window-state-event", self._on_state)
         GLib.timeout_add_seconds(sleep.CHECK_SECONDS, self._sleep_timer)
+
+    # spaces: the current space holds the tabs that the strip shows
+    @property
+    def space(self):
+        return self.spaces[self.space_index]
+
+    @property
+    def tabs(self):
+        return self.space.tabs
+
+    @property
+    def active(self):
+        return self.space.active
+
+    @active.setter
+    def active(self, tab):
+        self.space.active = tab
+
+    def all_tabs(self):
+        return [tab for space in self.spaces for tab in space.tabs]
+
+    def visible_tabs(self):
+        """Return the tabs that show now. A split pair gives two tabs."""
+        return spaces.visible_tabs(self.space)
 
     # construction
     def _build(self):
@@ -298,6 +323,13 @@ class Window(Gtk.ApplicationWindow):
         self.scrim.set_visible_window(True)
         self.scrim.get_style_context().add_class("cruxx-scrim")
         self.scrim.connect("button-press-event", lambda *_: self.hide_prompts() or True)
+        # While a tab is dragged, this zone lies over the page. A drop splits.
+        self.dropzone = Gtk.EventBox()
+        self.dropzone.set_visible_window(True)
+        self.dropzone.get_style_context().add_class("cruxx-dropzone")
+        self.dropzone.drag_dest_set(0, drop_targets(), Gdk.DragAction.MOVE)
+        self.dropzone.connect("drag-motion", self._on_zone_motion)
+        self.dropzone.connect("drag-drop", self._on_zone_drop)
         self.status = Gtk.Label(ellipsize=Pango.EllipsizeMode.MIDDLE)
         self.status.get_style_context().add_class("cruxx-status")
         self.status.set_halign(Gtk.Align.START)
@@ -306,7 +338,7 @@ class Window(Gtk.ApplicationWindow):
         self.status.set_margin_end(10)
         self.status.set_margin_bottom(10)
         self.find_bar = self._build_find_bar()
-        for widget in (self.scrim, self.status, self.find_bar,
+        for widget in (self.scrim, self.dropzone, self.status, self.find_bar,
                        self.prompt.card, self.switcher.card):
             widget.set_no_show_all(True)
             widget.hide()
@@ -356,8 +388,19 @@ class Window(Gtk.ApplicationWindow):
         self.awake_item.connect("toggled", self._on_awake_toggled)
         self.awake_enable_item = Gtk.CheckMenuItem(label="Offer keep-awake for sites")
         self.awake_enable_item.connect("toggled", self._on_awake_enable_toggled)
+        self.split_enable_item = Gtk.CheckMenuItem(label="Split View")
+        self.split_enable_item.connect("toggled", self._on_split_enable_toggled)
+        self.split_item = Gtk.MenuItem(label="Split current page (Ctrl+Alt+N)")
+        self.split_item.set_no_show_all(True)
+        self.split_item.connect("activate", lambda *_: self.split_current())
+        self.unsplit_item = Gtk.MenuItem(label="Separate split tabs")
+        self.unsplit_item.set_no_show_all(True)
+        self.unsplit_item.connect("activate", lambda *_: self.unsplit_active())
+        space_item = Gtk.MenuItem(label="New space")
+        space_item.connect("activate", lambda *_: self.new_space())
         for item in (self.pause_item, reader, hide, unhide, origin, self.awake_item,
-                     self.awake_enable_item, self.popup_item):
+                     self.awake_enable_item, self.split_enable_item, self.split_item,
+                     self.unsplit_item, space_item, self.popup_item):
             menu.append(item)
         menu.show_all()
         menu.connect("show", self._on_menu_show)
@@ -376,6 +419,11 @@ class Window(Gtk.ApplicationWindow):
         self.awake_item.set_visible(enabled)
         self.awake_item.set_sensitive(bool(tab and tab.host))
         self.awake_item.set_active(bool(tab and self.is_kept_awake(tab)))
+        split_on = self.split_on()
+        self.split_enable_item.set_active(split_on)
+        self.split_item.set_visible(split_on)
+        self.unsplit_item.set_visible(split_on)
+        self.unsplit_item.set_sensitive(bool(tab and self.split_of(tab)))
         self._menu_updating = False
         self.popup_item.set_label("Blocked popups: %d" % (tab.blocked_popups if tab else 0))
 
@@ -448,7 +496,7 @@ class Window(Gtk.ApplicationWindow):
     def _on_theme_changed(self):
         self.colors = theme.load()
         self._apply_theme()
-        for tab in self.tabs:
+        for tab in self.all_tabs():
             if tab.view is not None:
                 tab.view.set_background_color(rgba(self.colors["background"]))
 
@@ -458,7 +506,325 @@ class Window(Gtk.ApplicationWindow):
 
     def add_view(self, tab):
         tab.view.show()
-        self.stack.add_named(tab.view, str(id(tab)))
+        tab.view.connect("focus-in-event", self._on_view_focus, tab)
+        self._place(tab)
+
+    def _place(self, tab):
+        """Put the view of TAB where it belongs: a pane of its pair, or the stack."""
+        view = tab.view
+        split = self.split_of(tab)
+        if split is not None and split.panes is not None:
+            holder = split.panes[0 if tab is split.a else 1]
+        else:
+            holder = self.stack
+        parent = view.get_parent()
+        if parent is holder:
+            return
+        if parent is not None:
+            parent.remove(view)
+        if holder is self.stack:
+            holder.add_named(view, str(id(tab)))
+        else:
+            holder.pack_start(view, True, True, 0)
+
+    def _destroy_view(self, tab):
+        view = tab.view
+        if view is not None:
+            parent = view.get_parent()
+            if parent is not None:
+                parent.remove(view)
+            view.destroy()
+            tab.view = None
+
+    def _show(self, tab):
+        """Show TAB. If it is in a pair, show the pair. TAB is the focused pane."""
+        tab.ensure_view()
+        split = self.split_of(tab)
+        if split is None:
+            self._place(tab)
+            self.stack.set_visible_child(tab.view)
+            return
+        split.other(tab).ensure_view()
+        self._build_pair(split)
+        self.stack.set_visible_child(split.widget)
+        self._mark_focus(split)
+
+    def _build_pair(self, split):
+        if split.widget is None:
+            split.panes = []
+            paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+            paned.set_wide_handle(True)
+            paned.get_style_context().add_class("cruxx-split")
+            for index in range(2):
+                pane = Gtk.Box()
+                pane.get_style_context().add_class("cruxx-pane")
+                pane.show()
+                split.panes.append(pane)
+                (paned.pack1 if index == 0 else paned.pack2)(pane, True, False)
+            split.widget = paned
+            split.sized = False
+            paned.connect("size-allocate", self._on_pair_allocate, split)
+            paned.connect("notify::position", self._on_pair_moved, split)
+            paned.show()
+            self.stack.add_named(paned, "split-%d" % id(split))
+        self._place(split.a)
+        self._place(split.b)
+
+    def _mark_focus(self, split):
+        """Draw the outline on the pane of the active tab only."""
+        for pane, tab in zip(split.panes, (split.a, split.b)):
+            context = pane.get_style_context()
+            (context.add_class if tab is self.active else context.remove_class)("focus")
+
+    def _on_pair_allocate(self, paned, alloc, split):
+        """Set the divider from the saved ratio, once, when the width is known."""
+        if split.sized or alloc.width < 40 or getattr(split, "pending", False):
+            return
+        split.pending = True
+
+        def apply():
+            split.pending = False
+            if split.widget is paned:
+                paned.set_position(int(paned.get_allocated_width() * split.ratio))
+                split.sized = True
+            return False
+
+        GLib.idle_add(apply)
+
+    def _on_pair_moved(self, paned, _pspec, split):
+        width = paned.get_allocated_width()
+        if split.sized and width > 40:
+            split.ratio = spaces.clamp_ratio(paned.get_position() / width)
+            self.schedule_save()
+
+    def _on_view_focus(self, _view, _event, tab):
+        """A click in a pane gives it the focus."""
+        split = self.split_of(tab)
+        if split is not None and tab is not self.active and self.active in (split.a, split.b):
+            self.select_tab(tab)
+        return False
+
+    # split view
+    def split_on(self):
+        return bool(self.store.settings["split_enabled"])
+
+    def split_of(self, tab):
+        for space in self.spaces:
+            split = spaces.find_split(space.splits, tab)
+            if split is not None:
+                return split
+        return None
+
+    def pair_state(self, tab):
+        return "pair" if self.split_of(tab) is not None else ""
+
+    def _drop_split(self, split):
+        """Remove the pair. The views go back to the stack. The tabs stay."""
+        for space in self.spaces:
+            if split in space.splits:
+                space.splits.remove(split)
+        for tab in (split.a, split.b):
+            if tab.view is not None:
+                self._place(tab)
+        if split.widget is not None:
+            self.stack.remove(split.widget)
+            split.widget.destroy()
+            split.widget = None
+            split.panes = None
+
+    def split_current(self):
+        """Pair the current tab with the next free tab, or with a new blank tab."""
+        tab = self.active
+        if not self.split_on() or tab is None or tab.pinned or self.split_of(tab):
+            return
+        partner = spaces.choose_partner(self.tabs, tab, self.space.splits)
+        fresh = partner is None
+        if fresh:
+            partner = self.open_tab(private=tab.private, background=True)
+        self._pair(tab, partner)
+        if fresh:
+            self.focus_omnibox()
+
+    def split_with(self, other):
+        """Pair the current tab with OTHER (a tab that the user dropped)."""
+        tab = self.active
+        if (not self.split_on() or tab is None or other is None or other is tab
+                or other not in self.tabs or tab.pinned or other.pinned
+                or self.split_of(tab)):
+            return
+        old = self.split_of(other)
+        if old is not None:
+            self._drop_split(old)
+        self._pair(tab, other)
+
+    def _pair(self, first, second):
+        self.space.splits.append(spaces.Split(first, second))
+        spaces.regroup(self.tabs, self.space.splits)
+        self.select_tab(second)
+
+    def unsplit_active(self):
+        split = self.split_of(self.active) if self.active else None
+        if split is None:
+            return
+        self._drop_split(split)
+        self._show(self.active)
+        if self.active.view is not None:
+            self.active.view.grab_focus()
+        self.refresh()
+        self.schedule_save()
+
+    def focus_pane(self, delta):
+        split = self.split_of(self.active) if self.active else None
+        if split is not None:
+            target = split.a if delta < 0 else split.b
+            if target is not self.active:
+                self.select_tab(target)
+
+    def _on_split_enable_toggled(self, item):
+        if self._menu_updating:
+            return
+        self.store.settings["split_enabled"] = item.get_active()
+        try:
+            self.store.save_settings()
+        except OSError as exc:
+            log.warning("settings save failed: %s", exc)
+        if not item.get_active():
+            for space in self.spaces:
+                for split in list(space.splits):
+                    self._drop_split(split)
+            if self.active is not None:
+                self._show(self.active)
+            self.refresh()
+            self.schedule_save()
+
+    def _on_zone_motion(self, _zone, ctx, _x, _y, stamp):
+        if self.dragging is None:
+            return False
+        Gdk.drag_status(ctx, Gdk.DragAction.MOVE, stamp)
+        return True
+
+    def _on_zone_drop(self, _zone, ctx, _x, _y, stamp):
+        tab = self.dragging
+        if tab is None:
+            return False
+        self.drag_end()
+        Gtk.drag_finish(ctx, True, False, stamp)
+        self.split_with(tab)
+        return True
+
+    # spaces
+    def switch_space(self, index):
+        if index == self.space_index or not 0 <= index < len(self.spaces):
+            return
+        self.close_find()
+        self.hide_prompts(refocus=False)
+        now = time.monotonic()
+        for tab in self.visible_tabs():
+            tab.last_active = now
+        self.space_index = index
+        space = self.space
+        if not space.tabs:
+            self.open_tab()
+        else:
+            self.select_tab(space.active if space.active in space.tabs else space.tabs[0])
+        self.refresh()
+        self.schedule_save()
+
+    def cycle_space(self, delta):
+        self.switch_space(spaces.step(self.space_index, len(self.spaces), delta))
+
+    def new_space(self):
+        if len(self.spaces) >= spaces.MAX_SPACES:
+            return
+        self.spaces.append(spaces.Space(spaces.next_name(self.spaces)))
+        self.switch_space(len(self.spaces) - 1)
+
+    def rename_space(self, index):
+        """Ask for a name and an icon (a letter or an emoji) in a small popover."""
+        bar = self.strip.spacebar
+        if not 0 <= index < len(self.spaces) or index >= len(bar.dots):
+            return
+        space = self.spaces[index]
+        popover = Gtk.Popover.new(bar.dots[index])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_border_width(6)
+        name = Gtk.Entry()
+        name.set_max_length(spaces.NAME_MAX)
+        name.set_text(space.name)
+        name.set_placeholder_text("Name")
+        icon = Gtk.Entry()
+        icon.set_max_length(12)
+        icon.set_text(space.icon)
+        icon.set_placeholder_text("Icon: a letter or an emoji")
+        state = {"save": False}
+
+        def activate(*_):
+            state["save"] = True
+            popover.popdown()
+
+        def closed(*_):
+            if state["save"]:
+                space.name = spaces.clean_name(name.get_text(), space.name)
+                space.icon = spaces.clean_icon(icon.get_text(), space.name)
+                self.refresh()
+                self.schedule_save()
+            GLib.idle_add(popover.destroy)
+
+        for entry in (name, icon):
+            entry.connect("activate", activate)
+            box.pack_start(entry, False, False, 0)
+        popover.connect("closed", closed)
+        popover.add(box)
+        box.show_all()
+        popover.popup()
+        name.grab_focus()
+
+    def delete_space(self, index):
+        if len(self.spaces) <= 1 or not 0 <= index < len(self.spaces):
+            return
+        space = self.spaces[index]
+        if space.tabs:
+            dialog = Gtk.MessageDialog(
+                transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO, text="Delete this space?")
+            dialog.set_property("secondary-text", "The space \"%s\" and its %d tab%s will close." % (
+                space.name, len(space.tabs), "" if len(space.tabs) == 1 else "s"))
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.YES:
+                return
+        for split in list(space.splits):
+            self._drop_split(split)
+        for tab in list(space.tabs):
+            self.clear_permission_bars(tab)
+            self._destroy_view(tab)
+        was_current = index == self.space_index
+        self.space_index = spaces.remove_space(self.spaces, index, self.space_index)
+        if was_current:
+            now = self.space
+            if now.tabs:
+                self.select_tab(now.active if now.active in now.tabs else now.tabs[0])
+            else:
+                self.open_tab()
+        self.refresh()
+        self.schedule_save()
+
+    def space_menu(self, index, event, widget):
+        menu = Gtk.Menu()
+        rename = Gtk.MenuItem(label="Rename space")
+        rename.connect("activate", lambda *_: self.rename_space(index))
+        delete = Gtk.MenuItem(label="Delete space")
+        delete.set_sensitive(len(self.spaces) > 1)
+        delete.connect("activate", lambda *_: self.delete_space(index))
+        new = Gtk.MenuItem(label="New space")
+        new.set_sensitive(len(self.spaces) < spaces.MAX_SPACES)
+        new.connect("activate", lambda *_: self.new_space())
+        for item in (rename, delete, new):
+            menu.append(item)
+        menu.show_all()
+        menu.attach_to_widget(widget, None)
+        menu.connect("selection-done", lambda m: GLib.idle_add(m.destroy))
+        menu.popup_at_pointer(event)
 
     # layout
     def _layout(self):
@@ -497,6 +863,7 @@ class Window(Gtk.ApplicationWindow):
 
     def _sync_strip(self):
         self.strip.sync(self.tabs, self.active)
+        self.strip.spacebar.sync(self.spaces, self.space_index)
         self._set_title()
 
     def _set_title(self):
@@ -513,6 +880,7 @@ class Window(Gtk.ApplicationWindow):
     # tab operations
     def _sort_tabs(self):
         self.tabs.sort(key=lambda t: not t.pinned)
+        spaces.regroup(self.tabs, self.space.splits)
 
     def open_tab(self, url="", private=False, background=False, title="", pinned=False,
                  clean=False):
@@ -549,9 +917,8 @@ class Window(Gtk.ApplicationWindow):
         tab.last_active = now
         self.active = tab
         if not tab.private:
-            self._last_normal = self.tabs.index(tab)
-        tab.ensure_view()
-        self.stack.set_visible_child(tab.view)
+            self.space.last_normal = self.tabs.index(tab)
+        self._show(tab)
         self._sync_bars()
         self._sync_strip()
         self.schedule_save()
@@ -566,15 +933,19 @@ class Window(Gtk.ApplicationWindow):
             self.closed.append({"url": tab.url, "title": tab.title, "pinned": tab.pinned})
             del self.closed[:-CLOSED_CAP]
         self.clear_permission_bars(tab)
+        # The other pane of a pair takes the whole area.
+        split = self.split_of(tab)
+        partner = split.other(tab) if split is not None else None
+        if split is not None:
+            self._drop_split(split)
         self.tabs.remove(tab)
-        if tab.view is not None:
-            self.stack.remove(tab.view)
-            tab.view.destroy()
-            tab.view = None
+        self._destroy_view(tab)
         if not self.tabs:
             self.open_tab()
         elif tab is self.active:
-            self.select_tab(self.tabs[min(index, len(self.tabs) - 1)])
+            self.select_tab(partner or self.tabs[min(index, len(self.tabs) - 1)])
+        elif partner is not None and partner is self.active:
+            self._show(partner)
         self.refresh()
         self.schedule_save()
 
@@ -589,6 +960,11 @@ class Window(Gtk.ApplicationWindow):
 
     def toggle_pin(self):
         if self.active:
+            split = self.split_of(self.active)
+            if split is not None:
+                # Pinned tabs cannot be in a pair.
+                self._drop_split(split)
+                self._show(self.active)
             self.active.pinned = not self.active.pinned
             self._sort_tabs()
             self.refresh()
@@ -652,7 +1028,7 @@ class Window(Gtk.ApplicationWindow):
     # status line
     def link_hover(self, tab, uri):
         """Show the link under the pointer. Hide it a moment after it goes."""
-        if tab is not self.active:
+        if tab not in self.visible_tabs():
             return
         if self._status_src:
             GLib.source_remove(self._status_src)
@@ -778,7 +1154,7 @@ class Window(Gtk.ApplicationWindow):
             log.warning("hidden rule save failed: %s", exc)
             return
         if stored:
-            for other in self.tabs:
+            for other in self.all_tabs():
                 other.update_hidden_script()
             tab.run_in_world(js_call(read_resource("hidden.js"), self.store.hidden))
         else:
@@ -791,7 +1167,7 @@ class Window(Gtk.ApplicationWindow):
                 self.store.clear_hidden(tab.host)
             except OSError as exc:
                 log.warning("hidden rules clear failed: %s", exc)
-            for other in self.tabs:
+            for other in self.all_tabs():
                 other.update_hidden_script()
             tab.view.reload()
 
@@ -1022,15 +1398,23 @@ class Window(Gtk.ApplicationWindow):
         return False
 
     def save_session(self):
-        normal = [t for t in self.tabs if not t.private]
-        if self.active is not None and not self.active.private and self.active in normal:
-            active = normal.index(self.active)
-        else:
-            active = max(0, min(self._last_normal, len(normal) - 1))
-        rows = [{"url": t.url, "title": t.page_title, "pinned": t.pinned,
-                 "custom_title": t.custom_title} for t in normal]
+        rows = []
+        for space in self.spaces:
+            normal = [t for t in space.tabs if not t.private]
+            if space.active is not None and space.active in normal:
+                active = normal.index(space.active)
+            else:
+                active = max(0, min(space.last_normal, len(normal) - 1))
+            rows.append({
+                "name": space.name, "icon": space.icon, "active": active,
+                "tabs": [{"url": t.url, "title": t.page_title, "pinned": t.pinned,
+                          "custom_title": t.custom_title} for t in normal],
+                # A pair with a private tab is not saved.
+                "splits": spaces.split_rows(normal, space.splits)})
+        now = rows[self.space_index]
         try:
-            self.store.save_session(rows, active, self.side)
+            self.store.save_session(now["tabs"], now["active"], self.side,
+                                    space_rows=rows, current=self.space_index)
         except OSError as exc:
             log.warning("session save failed: %s", exc)
 
@@ -1038,13 +1422,27 @@ class Window(Gtk.ApplicationWindow):
         session = self.store.load_session()
         self.side = session["side"]
         self._layout()
-        for entry in session["tabs"]:
-            tab = Tab(self, entry["url"], entry["title"], entry["pinned"])
-            tab.custom_title = entry["custom_title"]
-            self.tabs.append(tab)
-        self._sort_tabs()
+        restored = []
+        for entry in session["spaces"]:
+            space = spaces.Space(entry["name"], entry["icon"])
+            for row in entry["tabs"]:
+                tab = Tab(self, row["url"], row["title"], row["pinned"])
+                tab.custom_title = row["custom_title"]
+                space.tabs.append(tab)
+            space.tabs.sort(key=lambda t: not t.pinned)
+            if space.tabs:
+                space.last_normal = min(entry["active"], len(space.tabs) - 1)
+                space.active = space.tabs[space.last_normal]
+            if self.split_on():
+                for item in entry["splits"]:
+                    space.splits.append(spaces.Split(
+                        space.tabs[item["a"]], space.tabs[item["b"]], item["ratio"]))
+            spaces.regroup(space.tabs, space.splits)
+            restored.append(space)
+        self.spaces = restored
+        self.space_index = session["current"]
         if self.tabs:
-            self.select_tab(self.tabs[min(session["active"], len(self.tabs) - 1)])
+            self.select_tab(self.space.active)
         for url in urls:
             self.open_tab(url)
         for _ in range(private_urls):
@@ -1073,11 +1471,19 @@ class Window(Gtk.ApplicationWindow):
                 return self._do(self._back)
             if name == "Right":
                 return self._do(self._forward)
+            if len(name) == 1 and name in "123456789" and not shift:
+                return self._do(lambda: self.switch_space(int(name) - 1))
             return False
         if not ctrl:
             return False
         if alt and not shift and name == "r":
             return self._do(self._reload_origin)
+        if alt and not shift and name == "n":
+            return self._do(self.split_current)
+        if alt and not shift and name in ("Left", "Right"):
+            return self._do(lambda: self.focus_pane(-1 if name == "Left" else 1))
+        if alt and not shift and name in ("Prior", "Next", "Page_Up", "Page_Down"):
+            return self._do(lambda: self.cycle_space(-1 if name in ("Prior", "Page_Up") else 1))
         if shift and name in ("bracketleft", "braceleft", "bracketright", "braceright"):
             return self._do(lambda: self.cycle(-1 if "left" in name else 1))
         if name in ("plus", "equal", "KP_Add"):
@@ -1197,29 +1603,30 @@ class Window(Gtk.ApplicationWindow):
                   "sleep_pinned": settings["sleep_pinned"]}
         enabled = settings["keep_awake_enabled"]
         infos = []
-        for index, tab in enumerate(self.tabs):
+        # Both panes of a visible pair stay awake.
+        visible = self.visible_tabs()
+        everything = self.all_tabs()
+        for index, tab in enumerate(everything):
             view = tab.view
             infos.append({
-                "id": index, "selected": tab is self.active,
+                "id": index, "selected": tab in visible,
                 "last_active": tab.last_active, "has_view": view is not None,
                 "playing": bool(view is not None and view.is_playing_audio()),
                 "downloading": self._download_pending(tab), "pinned": tab.pinned,
                 "keep_awake": enabled and self.is_kept_awake(tab)})
         for index in sleep.candidates(infos, now, wanted):
-            self.sleep_tab(self.tabs[index])
+            self.sleep_tab(everything[index])
 
     def sleep_tab(self, tab):
         """Save the state of TAB and destroy its WebView. The row stays."""
         view = tab.view
-        if view is None or tab is self.active:
+        if view is None or tab in self.visible_tabs():
             return
         tab.stored_url = view.get_uri() or tab.stored_url
         if view.get_title():
             tab.stored_title = view.get_title()
         self.clear_permission_bars(tab)
-        self.stack.remove(view)
-        view.destroy()
-        tab.view = None
+        self._destroy_view(tab)
         tab.manager = None
         tab.reader = False
         log.debug("tab put to sleep")
@@ -1242,6 +1649,10 @@ class Window(Gtk.ApplicationWindow):
         rename = Gtk.MenuItem(label="Rename tab")
         rename.connect("activate", lambda *_: self.rename_tab(tab))
         menu.append(rename)
+        if self.split_on() and self.split_of(tab) is not None:
+            separate = Gtk.MenuItem(label="Separate split tabs")
+            separate.connect("activate", lambda *_: self.unsplit_active())
+            menu.append(separate)
         if self.store.settings["keep_awake_enabled"] and tab.host:
             awake = Gtk.CheckMenuItem(label="Keep This Site Awake")
             awake.set_active(self.is_kept_awake(tab))
@@ -1255,10 +1666,13 @@ class Window(Gtk.ApplicationWindow):
     def drag_begin(self, tab):
         self.dragging = tab
         self.strip.drag_zone(True)
+        if self.split_on() and self.active is not None:
+            self.dropzone.show()
 
     def drag_end(self):
         self.dragging = None
         self.strip.drag_zone(False)
+        self.dropzone.hide()
 
     def drop_tab(self, target, after, pin):
         tab = self.dragging
@@ -1266,7 +1680,12 @@ class Window(Gtk.ApplicationWindow):
             return
         if target is tab:
             return
+        split = self.split_of(tab)
+        if pin and split is not None:
+            self._drop_split(split)
+            self._show(self.active)
         if reorder.move_tab(self.tabs, tab, target, after, pin):
+            spaces.regroup(self.tabs, self.space.splits)
             self.refresh()
             self.schedule_save()
 

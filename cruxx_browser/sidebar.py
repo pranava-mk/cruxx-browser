@@ -36,6 +36,9 @@ def _targets():
     return [Gtk.TargetEntry.new(DND_TARGET, Gtk.TargetFlags.SAME_APP, 0)]
 
 
+drop_targets = _targets
+
+
 def make_source(widget, win, tab):
     """Let the user drag the row of TAB. Only inside this application."""
     widget.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, _targets(), Gdk.DragAction.MOVE)
@@ -164,7 +167,9 @@ class TabRow(Gtk.EventBox):
 
     def update(self, live):
         tab = self.tab
-        state = (tab.title, tab.favicon, tab.url, live, tab.private, tab.blocked_popups)
+        paired = self.win.pair_state(tab)
+        state = (tab.title, tab.favicon, tab.url, live, tab.private, tab.blocked_popups,
+                 paired)
         if state == self._shown:
             return
         self._shown = state
@@ -174,7 +179,8 @@ class TabRow(Gtk.EventBox):
         self.mark.set_visible(not blank)
         self.mark.set_content(tab.favicon, letter_for(tab.url, tab.title))
         context = self.get_style_context()
-        for name, on in (("live", live), ("private", tab.private)):
+        for name, on in (("live", live), ("private", tab.private),
+                         ("paired", bool(paired))):
             (context.add_class if on else context.remove_class)(name)
         tip = tab.title + ("\n" + tab.url if tab.url else "")
         if self.get_tooltip_text() != tip:
@@ -281,6 +287,54 @@ class NewRow(Gtk.EventBox):
         return True
 
 
+class SpaceBar(Gtk.Box):
+    """A row of small round marks, one for each space. Click to switch."""
+
+    SIZE = 18
+
+    def __init__(self, win):
+        super().__init__(spacing=2)
+        self.win = win
+        self.dots = []
+        self._shown = None
+        self.set_valign(Gtk.Align.CENTER)
+        self.set_margin_start(6)
+
+    def sync(self, spaces, current):
+        """Make the marks match SPACES. Do nothing if nothing changed."""
+        state = (tuple((sp.name, sp.icon) for sp in spaces), current)
+        if state == self._shown:
+            return
+        self._shown = state
+        for dot in self.dots:
+            dot.destroy()
+        self.dots = []
+        for index, space in enumerate(spaces):
+            dot = Gtk.EventBox()
+            dot.set_visible_window(True)
+            dot.set_size_request(self.SIZE, self.SIZE)
+            dot.set_halign(Gtk.Align.START)
+            dot.set_valign(Gtk.Align.CENTER)
+            context = dot.get_style_context()
+            context.add_class("cruxx-space")
+            if index == current:
+                context.add_class("live")
+            dot.add(Gtk.Label(label=space.icon))
+            dot.set_tooltip_text(space.name)
+            dot.connect("button-press-event", self._on_press, index)
+            track_hover(dot)
+            self.pack_start(dot, False, False, 0)
+            dot.show_all()
+            self.dots.append(dot)
+
+    def _on_press(self, dot, event, index):
+        if event.button == 1:
+            self.win.switch_space(index)
+        elif event.button == 3:
+            self.win.space_menu(index, event, dot)
+        return True
+
+
 class TabStrip:
     """Holds the left column and the top strip. Only one is shown."""
 
@@ -290,6 +344,7 @@ class TabStrip:
         self.visible = True
         self.items = {}
         self.menu_button = menu_button
+        self.spacebar = SpaceBar(win)
 
         # Left column: scrolled list, then the settings button at the bottom.
         self.pins_flow = Gtk.FlowBox()
@@ -382,12 +437,13 @@ class TabStrip:
         self.top.set_visible((not left) and self.visible)
         foot = self.left_foot if left else self.top_foot
         button = self.menu_button
-        parent = button.get_parent()
-        if parent is not foot:
-            if parent is not None:
-                parent.remove(button)
-            foot.pack_start(button, False, False, 0)
-            button.show_all()
+        for widget in (button, self.spacebar):
+            parent = widget.get_parent()
+            if parent is not foot:
+                if parent is not None:
+                    parent.remove(widget)
+                foot.pack_start(widget, False, False, 0)
+                widget.show_all()
         button.set_direction(Gtk.ArrowType.UP if left else Gtk.ArrowType.DOWN)
 
     def drag_zone(self, on):

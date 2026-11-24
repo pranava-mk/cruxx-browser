@@ -143,5 +143,5 @@ moves when the list changes.
 
 ## Not copied
 
-Spaces, profiles, split view, groups, peek, reading ring, agent marks, unread
-badges, themes, Liquid Glass, extension doors.
+Profiles, groups, reading ring, agent marks, unread badges, Liquid Glass,
+extension doors. Spaces and Split View are implemented: see README.md.

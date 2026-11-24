@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import security, sleep
+from . import security, sleep, spaces
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ DEFAULT_SETTINGS = {
     "sleep_pinned": False,
     "keep_awake_enabled": False,
     "keep_awake_hosts": [],
+    "split_enabled": False,
 }
 
 
@@ -183,7 +184,7 @@ class Store:
         hosts = raw.get("shield_paused_hosts")
         if isinstance(hosts, list):
             out["shield_paused_hosts"] = [h for h in hosts if isinstance(h, str)]
-        for key in ("sleep_pinned", "keep_awake_enabled"):
+        for key in ("sleep_pinned", "keep_awake_enabled", "split_enabled"):
             if isinstance(raw.get(key), bool):
                 out[key] = raw[key]
         out["sleep_after_min"] = sleep.clean_minutes(raw.get("sleep_after_min", 30))
@@ -303,25 +304,38 @@ class Store:
 
     # session
     def load_session(self):
+        """Return the session. Old flat files become the space "Home".
+
+        The keys "tabs" and "active" are those of the current space.
+        """
         raw = read_json(self._p("session.json"), {})
         if not isinstance(raw, dict):
             raw = {}
-        rows = raw.get("tabs")
-        if isinstance(rows, list):
-            # Older sessions have no custom title.
-            rows = [dict(r, custom_title=r["custom_title"][:200]
-                         if isinstance(r.get("custom_title"), str) else "")
-                    for r in rows if isinstance(r, dict)]
-        tabs = _clean_list(rows, _TAB_SHAPE, allow_empty_url=True)
-        active = raw.get("active")
-        if not isinstance(active, int) or isinstance(active, bool) or not 0 <= active < len(tabs):
-            active = 0
-        side = raw.get("side") if raw.get("side") in ("left", "top") else "left"
-        return {"tabs": tabs, "active": active, "side": side}
 
-    def save_session(self, tabs, active, side):
+        def clean_tabs(rows):
+            if isinstance(rows, list):
+                # Older sessions have no custom title.
+                rows = [dict(r, custom_title=r["custom_title"][:200]
+                             if isinstance(r.get("custom_title"), str) else "")
+                        for r in rows if isinstance(r, dict)]
+            return _clean_list(rows, _TAB_SHAPE, allow_empty_url=True)
+
+        found = spaces.migrate(raw, clean_tabs)
+        side = raw.get("side") if raw.get("side") in ("left", "top") else "left"
+        now = found["spaces"][found["current"]]
+        return {"tabs": now["tabs"], "active": now["active"], "side": side,
+                "spaces": found["spaces"], "current": found["current"]}
+
+    def save_session(self, tabs, active, side, space_rows=None, current=0):
+        """Write the session. SPACE_ROWS is a list of space dicts (name, icon,
+        tabs, active, splits). Without it, TABS and ACTIVE make the space "Home".
+        """
+        if space_rows is None:
+            space_rows = [{"name": spaces.DEFAULT_NAME, "icon": "H", "tabs": tabs,
+                           "active": active, "splits": []}]
         write_json_atomic(self._p("session.json"),
-                          {"tabs": tabs, "active": active, "side": side})
+                          {"version": spaces.SESSION_VERSION, "side": side,
+                           "current": current, "spaces": space_rows})
 
     # hidden rules
     def _load_hidden(self):
