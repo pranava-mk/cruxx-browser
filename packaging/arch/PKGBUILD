@@ -1,0 +1,74 @@
+# Maintainer: pranava-mk
+#
+# This PKGBUILD builds from the LOCAL source tree, not from a download.
+# The repo root is "$startdir/../.." (this file lives in packaging/arch/).
+# Run makepkg from packaging/arch/ (see "make package" in the top Makefile).
+
+pkgname=cruxx-browser
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Small, fast, quiet WebKit browser for Omarchy (GTK3, WebKit2GTK 4.1)'
+arch=('any')
+url='https://github.com/pranava-mk/cruxx-browser'
+license=('MIT')
+depends=(
+  python
+  python-gobject
+  gtk3
+  webkit2gtk-4.1
+  bubblewrap
+  xdg-dbus-proxy
+  hicolor-icon-theme
+)
+makedepends=()
+source=()
+sha256sums=()
+
+_root() {
+  printf '%s\n' "$startdir/../.."
+}
+
+check() {
+  local root
+  root="$(_root)"
+  cd "$root"
+  python -m unittest discover -s tests -p 'test_omnibox.py'
+  python -m unittest discover -s tests -p 'test_store.py'
+  python -m unittest discover -s tests -p 'test_shield.py'
+  python -m unittest discover -s tests -p 'test_security.py'
+  python -m unittest discover -s tests -p 'test_theme.py'
+}
+
+package() {
+  local root pyver libdir
+  root="$(_root)"
+  pyver="$(python -c 'import sys;print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+  libdir="/usr/lib/python${pyver}/site-packages/cruxx_browser"
+
+  # Python package, including resources/. Skip __pycache__ and .pyc files.
+  local src rel
+  while IFS= read -r -d '' src; do
+    rel="${src#"$root"/cruxx_browser/}"
+    if [[ "$rel" == *.py || "$rel" == resources/* ]]; then
+      install -Dm644 "$src" "${pkgdir}${libdir}/${rel}"
+    fi
+  done < <(find "$root/cruxx_browser" -type f \
+             -not -path '*/__pycache__/*' -not -name '*.pyc' -print0)
+
+  python -m compileall -q -d "$libdir" "${pkgdir}${libdir}"
+
+  # Launcher. -I (isolated mode) keeps the current directory off sys.path.
+  install -dm755 "${pkgdir}/usr/bin"
+  cat > "${pkgdir}/usr/bin/cruxx-browser" <<'LAUNCHER'
+#!/bin/sh
+exec /usr/bin/python3 -I -m cruxx_browser "$@"
+LAUNCHER
+  chmod 755 "${pkgdir}/usr/bin/cruxx-browser"
+
+  install -Dm644 "$root/packaging/cruxx-browser.desktop" \
+    "${pkgdir}/usr/share/applications/cruxx-browser.desktop"
+  install -Dm644 "$root/packaging/cruxx-browser.svg" \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/cruxx-browser.svg"
+  install -Dm644 "$root/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

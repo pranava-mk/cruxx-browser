@@ -1,0 +1,18 @@
+-- cruxx browser: example lines for the Omarchy Hyprland Lua config.
+-- This file is an example only. Nothing reads it.
+-- Copy the lines you need into ~/.config/hypr/bindings.lua.
+
+-- Option 1: make cruxx browser the default browser. Run this once in a
+-- terminal. Then the Omarchy browser key (for example SUPER + B, which uses
+-- { omarchy = "browser" }) opens cruxx browser:
+--   xdg-settings set default-web-browser cruxx-browser.desktop
+-- Check the result:
+--   xdg-settings get default-web-browser
+
+-- Option 2: add a key only for cruxx browser. Remove the old binding first,
+-- if the key has one.
+-- hl.unbind("SUPER + SHIFT + B")
+-- o.bind("SUPER + SHIFT + B", "cruxx browser", "uwsm-app -- cruxx-browser")
+
+-- Private tab (optional).
+-- o.bind("SUPER + SHIFT + ALT + B", "cruxx browser (private)", "uwsm-app -- cruxx-browser --private")
