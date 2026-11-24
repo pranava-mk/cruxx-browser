@@ -13,7 +13,7 @@ from gi.repository import Gdk, Gtk  # noqa: E402
 from . import __version__, omnibox, shortcuts, store, wall  # noqa: E402
 from .forms import button, choice, confirm, divider, label, row, switch  # noqa: E402
 
-SECTIONS = ("General", "Tabs", "Themes", "Privacy", "Shortcuts", "About")
+SECTIONS = ("General", "Tabs", "Themes", "Privacy", "Passwords", "Shortcuts", "About")
 PEEK_TEXT = {"alt": "Alt+click", "shift": "Shift+click", "off": "Off"}
 WALL_TEXT = (("off", "Off"), ("omarchy", "Omarchy wallpaper"), ("color", "Colour"),
              ("gradient", "Gradient"), ("picture", "Picture"))
@@ -214,6 +214,32 @@ class SettingsWindow(Gtk.Window):
         self._add(page, row("Hidden elements", button(
             "Clear hidden-element rules", self._clear_hidden)))
         page.pack_start(self.note, False, False, 6)
+
+    def _page_passwords(self, page):
+        manager = self.win.passwords
+        self._bool(page, "passwords_enabled", "Offer to save passwords",
+                   "Asks after a sign-in worked. The browser never fills a field by itself.")
+        if manager.notice():
+            self._add(page, label(manager.notice(), "cruxx-note", wrap=True))
+        self._add(page, row("Saved passwords", button(
+            "Open passwords", self.win.open_passwords),
+            "Stored in the system keyring. Shortcut: Ctrl+Alt+L."))
+        self._add(page, label("Sites where the browser does not offer to save", "cruxx-subtitle"))
+        for origin in list(self._opt("password_never")) or [None]:
+            if origin is None:
+                self._add(page, row("None", None))
+                continue
+            self._add(page, self._item(origin, lambda o=origin: self._allow_offers(o)))
+
+    def refresh_passwords(self):
+        self._fill("Passwords")
+
+    def _allow_offers(self, origin):
+        try:
+            self.win.store.remove_password_never(origin)
+        except OSError:
+            pass
+        self._fill("Passwords")
 
     def _item(self, text, remove, note=None):
         return row(text, button("Remove", remove), note)

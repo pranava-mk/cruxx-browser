@@ -8,7 +8,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
-from . import omnibox, store  # noqa: E402
+from . import omnibox, pwtest, store  # noqa: E402
 from .shield import Shield  # noqa: E402
 from .window import Window  # noqa: E402
 
@@ -65,6 +65,12 @@ class CruxxApp(Gtk.Application):
 
     def _first_launch(self, opts):
         self.opts = opts
+        self.pw_port = 0
+        if opts.test_action in pwtest.ACTIONS:
+            # The password tests use a local page and the memory vault.
+            self.pw_server, self.pw_port = pwtest.start_server()
+            opts.test_url = "http://127.0.0.1:%d/login.html" % self.pw_port
+            opts.test_vault = "memory"
         self.store = store.Store()
         self.shield = Shield(store.cache_dir())
         self.shield.compile()
@@ -134,6 +140,8 @@ class CruxxApp(Gtk.Application):
         """Hidden test: do one feature action, hold the window, then exit 0."""
         win = self.window
         hold = max(1, min(self.opts.test_hold, 20))
+        if action in pwtest.ACTIONS:
+            return pwtest.Driver(self, action, self.pw_port).start()
         if action == "wall":
             if win.store.settings["wall"]["kind"] == "off":
                 win.set_option("wall", dict(win.store.settings["wall"], kind="omarchy"))

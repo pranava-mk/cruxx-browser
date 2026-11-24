@@ -13,6 +13,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
 
 from . import (cleanlink, floatvideo, memory, omnibox, reorder, security,  # noqa: E402
                shortcuts, sleep, spaces, store, theme)
+from . import passwords as passwords_mod  # noqa: E402
 from .addressbar import (FIELD_HEIGHT, FIELD_WIDTH, LIFT, AddressPrompt,  # noqa: E402
                          SwitcherPrompt)
 from .sidebar import TabStrip, drop_targets  # noqa: E402
@@ -283,6 +284,7 @@ class Window(Gtk.ApplicationWindow):
         self._build()
         self.connect("key-press-event", self._on_key)
         self.connect("window-state-event", self._on_state)
+        self.passwords = passwords_mod.Passwords(self)
         GLib.timeout_add_seconds(sleep.CHECK_SECONDS, self._sleep_timer)
 
     # spaces: the current space holds the tabs that the strip shows
@@ -525,6 +527,9 @@ class Window(Gtk.ApplicationWindow):
                 "destroy", lambda *_: setattr(self, "_settings_win", None))
         self._settings_win.show_section(section)
 
+    def open_passwords(self):
+        self.passwords.open_panel()
+
     def _popover_anchor(self, tab):
         widget = self.strip.items.get(tab)
         if widget is None or not widget.get_mapped():
@@ -721,6 +726,7 @@ class Window(Gtk.ApplicationWindow):
             holder.pack_start(view, True, True, 0)
 
     def _destroy_view(self, tab):
+        self.passwords.tab_gone(tab)
         self._release_float(tab)
         view = tab.view
         if view is not None:
@@ -1953,6 +1959,8 @@ class Window(Gtk.ApplicationWindow):
             return False
         if alt and not shift and name == "r":
             return self._do(self._reload_origin)
+        if alt and not shift and name == "l":
+            return self._do(self.open_passwords)
         if alt and not shift and name == "n":
             return self._do(self.split_current)
         if alt and not shift and name in ("Left", "Right"):

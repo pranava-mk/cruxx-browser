@@ -22,7 +22,9 @@ def build_parser():
     parser.add_argument("--test-url", help=argparse.SUPPRESS)
     parser.add_argument("--test-sleep", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--test-action", choices=("wall", "peek", "peek-adopt", "float",
-                                                  "float-back", "settings"), help=argparse.SUPPRESS)
+                                                  "float-back", "settings", "pwsave",
+                                                  "pwfill"), help=argparse.SUPPRESS)
+    parser.add_argument("--test-vault", choices=("memory",), help=argparse.SUPPRESS)
     parser.add_argument("--test-hold", type=int, default=6, help=argparse.SUPPRESS)
     parser.add_argument("--test-exit-after-load", action="store_true",
                         help=argparse.SUPPRESS)
@@ -48,7 +50,8 @@ def main(argv=None):
         level=logging.DEBUG if opts.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s")
     from .app import CruxxApp
-    app = CruxxApp(parse_args, unique=opts.test_url is None)
+    app = CruxxApp(parse_args, unique=opts.test_url is None
+                   and opts.test_action not in ("pwsave", "pwfill"))
     status = app.run(["cruxx-browser"] + argv)
     return app.exit_code or status
 

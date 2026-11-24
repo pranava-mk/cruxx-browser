@@ -1,4 +1,4 @@
-UNIT_TESTS = test_omnibox test_store test_shield test_security test_theme
+UNIT_TESTS = test_omnibox test_store test_shield test_security test_theme test_vault
 
 .PHONY: test test-unit run package install install-user uninstall-user lint clean
 

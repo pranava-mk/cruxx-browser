@@ -20,6 +20,7 @@ depends=(
   xdg-dbus-proxy
   hicolor-icon-theme
   # WebKit needs these for audio output and video decoding.
+  libsecret
   gst-plugins-good
   gst-plugins-bad
   gst-libav

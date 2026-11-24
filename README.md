@@ -47,6 +47,7 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 - Video float. Press Ctrl+Shift+P. The browser looks for the largest playing video (or else the largest visible video) in the page. If there is none, a short note says "No video on this page". Otherwise the WebView of the tab moves, without a reload, into a small window of 480x270 with the title "cruxx float" and a random token. A style makes the video fill that window. On Hyprland, the browser uses `hyprctl` (argument lists, no shell) to make the window float, set its size, move it to the bottom right of the focused monitor, and pin it so that it stays on top. The browser does this only when `HYPRLAND_INSTANCE_SIGNATURE` is set and `hyprctl` is in the path. Press Ctrl+Shift+P again in either window, or close the small window, to put the page back in its tab and remove the style. The tab row shows "floating" while the video is out. A floating tab never sleeps. A tab in a split pair cannot float. The style cannot fill the window if the page puts the video in an element with a CSS transform.
 - Split View. It is off by default. Turn it on with "Split View" in Settings (`split_enabled` in `settings.json`). Press Ctrl+Alt+N, or use "Split current page" in the settings menu. The browser pairs the current tab with the next tab. If there is no other tab, it opens a new blank tab and shows the address field. You can also drag a tab from the list onto the page. Drag the divider to change the width of the panes. The pane with the outline gets all page commands (address field, find, reading mode, hide element, zoom, reload, back, forward). Click a pane, or press Ctrl+Alt+Left or Ctrl+Alt+Right, to move the focus. Ctrl+W closes the focused tab. The other pane then takes the whole area. A pair shows as two rows with a bar on the left side. Click one row to select the pair with that pane in focus. "Separate split tabs" (settings menu, tab menu) makes the two tabs normal again. A pinned tab cannot be in a pair. Pairs and the divider position are saved in the session. A pair that has a private tab is not saved. Tab sleep never puts a visible pane to sleep. If you turn Split View off, all pairs end.
 - Spaces. A space is a separate set of tabs and pins. It has a name, an icon (a letter or an emoji), its own split pairs, and its own selected tab. The first space is "Home". Small round marks at the bottom of the tab list show the spaces. Click a mark to switch. Right-click a mark to rename or delete the space, or to add a new space. "New space" is also in the settings menu. The browser asks before it deletes a space that has tabs. A switch does not close the pages of the other spaces. They can sleep as usual. A private tab belongs to the current space. The browser does not save it. The session keeps all spaces. Old session files load into the space "Home". You can have up to 9 spaces.
+- Passwords. The browser offers to save a sign-in after the sign-in worked. It shows your saved accounts under a sign-in field when you click the field. It never fills a field by itself: you must click an account. Everything is stored in the system keyring (Secret Service, for example GNOME Keyring or KeePassXC). Nothing is written to a file. Press Ctrl+Alt+L to open the Passwords window. It lists host and user name, and it has a search field. For each account you can copy the user name, copy the password (the browser clears the clipboard after 45 seconds if it still holds that password), show the password for 10 seconds, or delete the account. In Settings, section Passwords, you can turn off the offers (`passwords_enabled`) and remove sites from the "never" list (`password_never`). The site card shows how many passwords are saved for the site. A private tab never saves a password, but it can fill one. If the keyring is not available, the feature turns off and Settings shows a note.
 - Find in page, zoom, fullscreen, and a tab switcher (Ctrl+K, a floating list with fuzzy match on title and address).
 
 ## Keyboard
@@ -70,6 +71,7 @@ It reuses only the design idea and two data lists (ad-blocker domains and select
 | Ctrl+1 to Ctrl+8 | Go to tab 1 to 8 |
 | Ctrl+9 | Go to last tab |
 | Ctrl+Alt+N | Split the current page (Split View must be on) |
+| Ctrl+Alt+L | Open the Passwords window |
 | Ctrl+Alt+Left, Ctrl+Alt+Right | Move the focus to the left or right pane |
 | Alt+1 to Alt+9 | Go to space 1 to 9 |
 | Ctrl+Alt+Page Up, Ctrl+Alt+Page Down | Previous, next space |
@@ -108,7 +110,7 @@ make install
 Pacman installs the dependencies:
 
 ```
-sudo pacman -S python python-gobject gtk3 webkit2gtk-4.1 bubblewrap xdg-dbus-proxy hicolor-icon-theme \
+sudo pacman -S python python-gobject gtk3 webkit2gtk-4.1 bubblewrap xdg-dbus-proxy hicolor-icon-theme libsecret \
   gst-plugins-good gst-plugins-bad gst-libav
 ```
 
@@ -161,6 +163,7 @@ Use it in Hyprland window rules.
 - The browser keeps data under the XDG directories.
 - Directories have mode 0700. Files have mode 0600.
 - Private tabs write nothing to history, session, or the closed-tab list.
+- Passwords are stored in the system keyring only. Private tabs never save a password.
 
 ## Security
 
@@ -178,6 +181,8 @@ See `SECURITY.md` for more.
 ## Testing
 
 Hidden test options (for the developer): `--test-url URL --test-action wall|peek|peek-adopt|float|float-back|settings --test-hold SECONDS` loads URL, does the action, keeps the window open, and then exits with code 0.
+
+The password tests are `--test-action pwsave` and `--test-action pwfill`. They start a local page on 127.0.0.1 and use the in-memory vault (`--test-vault memory`). They do not touch the real keyring. They exit with code 0 when the offer to save, the list of accounts, and the fill work.
 
 Run all tests:
 

@@ -22,6 +22,7 @@ SHIFT = {
 SPECIAL = (
     ("Ctrl+Alt+R", "Reload from the origin"),
     ("Ctrl+Alt+N", "Split the current page"),
+    ("Ctrl+Alt+L", "Passwords"),
     ("Ctrl+Alt+Left, Ctrl+Alt+Right", "Move focus to the left or right pane"),
     ("Ctrl+Alt+Page Up, Ctrl+Alt+Page Down", "Previous, next space"),
     ("Alt+1 to Alt+9", "Go to space 1 to 9"),

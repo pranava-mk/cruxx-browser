@@ -31,6 +31,20 @@ Update `webkit2gtk-4.1` often.
 - The app makes no network requests by itself. It has no telemetry.
 - The code never logs full URLs at INFO level or above.
 
+## Passwords
+
+- Where: passwords are stored in the system keyring (Secret Service, through libsecret). The schema is `dev.cruxx.Browser.Password`. The attributes are `origin` and `username`. The browser never writes a password to a file. `settings.json` holds only the switch `passwords_enabled` and the list `password_never` (origins).
+- If the keyring is not available, or it stays locked, the feature turns off. The app does not crash.
+- The browser never logs user names, passwords, or full URLs.
+- Origin: the browser computes the origin in Python, from the address of the top-level page of the tab. It never trusts an origin, URL, or host that a page script sends.
+- Only `https` origins and `http` on `localhost`, `127.0.0.1`, and `[::1]` can save or fill. A fill needs an exact origin match: scheme, host, and port. Sub domains do not match.
+- Top frame only: the form script runs in the isolated world "cruxx" in the top frame. Frames and iframes cannot capture or receive a password. The message handler `cruxxForms` exists only in that world. A page cannot call it. The script ignores events that the page itself made (`isTrusted`).
+- The browser checks every message: types, lengths (user name 512, password 4096), and no NUL characters.
+- Save: the browser keeps a sign-in in memory for 60 seconds, for one tab. It asks to save only after the next page finished loading on the same site and that page has no visible password field. You can choose Save, Never for this site, or Not now.
+- Never auto-fill: the browser puts a value in a field only after you click an account in the list. The browser sends the values to the page with `json.dumps`. The script sets the value and sends `input` and `change` events.
+- Private tabs: a private tab never offers to save and never writes. It can fill, read only.
+- Copy: a copied password leaves the clipboard after 45 seconds, only if the clipboard still holds it. The Show button hides the password again after 10 seconds.
+
 ## Report a problem
 
 Use GitHub private vulnerability reporting on this repository:

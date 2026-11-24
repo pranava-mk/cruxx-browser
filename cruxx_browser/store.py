@@ -34,13 +34,16 @@ DEFAULT_SETTINGS = {
     "zoom_by_host": {},
     "wall": dict(wall.DEFAULT_WALL),
     "peek_modifier": "alt",
+    "passwords_enabled": True,
+    "password_never": [],
 }
 # Search engines that the omnibox knows. A test keeps this in step.
 ENGINES = ("duckduckgo", "google", "brave", "startpage", "kagi")
 SLEEP_CHOICES = (0, 15, 30, 60, 120)
 PEEK_MODIFIERS = ("alt", "shift", "off")
 BOOL_OPTIONS = ("shield_enabled", "restore_session", "sleep_pinned",
-                "keep_awake_enabled", "split_enabled")
+                "keep_awake_enabled", "split_enabled", "passwords_enabled")
+NEVER_MAX = 500
 ZOOM_MIN = 0.3
 ZOOM_MAX = 5.0
 
@@ -54,6 +57,17 @@ def clean_zoom(value):
     return round(min(ZOOM_MAX, max(ZOOM_MIN, float(value))), 2)
 
 
+def clean_never(value):
+    """Return the list of origins in VALUE that are valid. Drop the others."""
+    out = []
+    if isinstance(value, list):
+        for item in value:
+            if (isinstance(item, str) and len(item) <= 300
+                    and security.permission_origin(item) == item and item not in out):
+                out.append(item)
+    return out[:NEVER_MAX]
+
+
 def check_option(key, value):
     """Return the clean VALUE for the setting KEY. Raise ValueError if bad."""
     if key == "engine":
@@ -65,6 +79,9 @@ def check_option(key, value):
     elif key == "wall":
         if isinstance(value, dict):
             return wall.clean_wall(value)
+    elif key == "password_never":
+        if isinstance(value, list):
+            return clean_never(value)
     elif key in BOOL_OPTIONS:
         if isinstance(value, bool):
             return value
@@ -240,8 +257,9 @@ class Store:
         hosts = raw.get("shield_paused_hosts")
         if isinstance(hosts, list):
             out["shield_paused_hosts"] = [h for h in hosts if isinstance(h, str)]
+        out["password_never"] = clean_never(raw.get("password_never"))
         for key in ("sleep_pinned", "keep_awake_enabled", "split_enabled",
-                    "restore_session"):
+                    "restore_session", "passwords_enabled"):
             if isinstance(raw.get(key), bool):
                 out[key] = raw[key]
         out["wall"] = wall.clean_wall(raw.get("wall"))
@@ -279,6 +297,16 @@ class Store:
         except OSError:
             self.settings[key] = before
             raise
+
+    def add_password_never(self, origin):
+        """Stop offers to save passwords for ORIGIN."""
+        current = self.settings["password_never"]
+        if origin not in current:
+            self.set_option("password_never", current + [origin])
+
+    def remove_password_never(self, origin):
+        self.set_option("password_never",
+                        [o for o in self.settings["password_never"] if o != origin])
 
     def zoom_for(self, host):
         return self.settings["zoom_by_host"].get(registrable_host(host), 1.0)

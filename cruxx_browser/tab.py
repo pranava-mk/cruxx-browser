@@ -55,6 +55,8 @@ class Tab:
         self.custom_title = ""
         self.last_active = time.monotonic()
         self.manager = None
+        # Pending sign-in of this tab. Memory only. See passwords.py.
+        self.pw_pending = None
         self._actions = []
         self._last_popup = None
 
@@ -88,6 +90,9 @@ class Tab:
         manager = WebKit2.UserContentManager()
         manager.register_script_message_handler_in_world("cruxxHide", WORLD)
         manager.connect("script-message-received::cruxxHide", self._on_hide_message)
+        # The forms handler exists in the isolated world only. A page can not call it.
+        manager.register_script_message_handler_in_world("cruxxForms", WORLD)
+        manager.connect("script-message-received::cruxxForms", self._on_forms_message)
         settings = WebKit2.Settings()
         security.apply_settings(settings, win.opts.dev, log)
         view = WebKit2.WebView(
@@ -163,6 +168,7 @@ class Tab:
         self.manager.add_script(WebKit2.UserScript.new_for_world(
             source, WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, WORLD, None, None))
+        self.manager.add_script(self.win.passwords.user_script())
 
     def run_in_world(self, source):
         if self.view is not None:
@@ -181,9 +187,12 @@ class Tab:
             self.reader = False
             self.blocked_popups = 0
             self.win.clear_permission_bars(self)
+            self.win.passwords.page_started(self)
         if event == WebKit2.LoadEvent.COMMITTED:
             self.win.apply_zoom(self)
         self.win.load_changed(self, event)
+        if event == WebKit2.LoadEvent.FINISHED:
+            self.win.passwords.page_finished(self)
 
     def _on_load_failed(self, _view, _event, _uri, _error):
         self.win.load_failed(self)
@@ -283,6 +292,11 @@ class Tab:
         value = result.get_js_value() if hasattr(result, "get_js_value") else result
         if value is not None and value.is_string():
             self.win.hide_selector(self, value.to_string())
+
+    def _on_forms_message(self, _manager, result):
+        value = result.get_js_value() if hasattr(result, "get_js_value") else result
+        if value is not None and value.is_string():
+            self.win.passwords.on_message(self, value.to_string())
 
     def _on_context_menu(self, view, menu, _event, hit):
         if not self.win.opts.dev:

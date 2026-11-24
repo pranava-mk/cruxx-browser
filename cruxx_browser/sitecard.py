@@ -94,6 +94,10 @@ class SiteCard(_Pop):
         body.pack_start(row("Zoom", self._zoom_controls()), False, False, 4)
         body.pack_start(divider(), False, False, 6)
         self._permissions(body)
+        saved = label("Saved passwords: …", "cruxx-note")
+        body.pack_start(saved, False, False, 4)
+        win.passwords.count_for(tab, lambda n: saved.set_text(
+            "%d saved password%s" % (n, "" if n == 1 else "s")))
         count = len(win.store.hidden.get(store.registrable_host(tab.host), []))
         body.pack_start(row("Hidden elements: %d" % count, button(
             "Show hidden list", self._show_hidden)), False, False, 4)
